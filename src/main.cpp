@@ -1,18 +1,27 @@
 #include <Arduino.h>
 
-// put function declarations here:
-int myFunction(int, int);
+#include "audio_acquisition.h"
+#include "ppg_acquisition.h"
+#include "noise_filter.h"
+#include "buffer_manager.h"
+#include "network_manager.h"
+#include "ws_client.h"
+#include "mqtt_client.h"
+#include "reconnect_manager.h"
 
 void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+  Serial.begin(115200);
+
+  audio_acquisition_init();
+  ppg_acquisition_init();
+  noise_filter_init();
+  buffer_manager_init();
+  network_manager_init();
+  ws_client_init();
+  mqtt_client_init();
+  reconnect_manager_init();
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-}
-
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
+  // TODO(Fase 4): task orchestration FreeRTOS, lihat SDD_HARDWARE.md §2.
 }

@@ -3,3 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Kredensial — jangan pernah commit (lihat CLAUDE.md & SDD_HARDWARE.md §7)
+include/secrets.h
