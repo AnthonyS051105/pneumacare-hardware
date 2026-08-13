@@ -13,3 +13,64 @@
 #define MQTT_BROKER_PORT 1883
 
 #define HEARTBEAT_INTERVAL_MS 10000
+
+// --- Audio: channel count & buffering (Fase 2, SDD_HARDWARE.md §4) ---
+//
+// ⚠️ Checkpoint 50%: hanya 1 mikrofon fisik tersedia (keterbatasan budget).
+// Kode ring buffer/filter di buffer_manager.cpp & noise_filter.cpp WAJIB
+// di-loop berdasarkan NUM_AUDIO_CHANNELS, bukan hardcode index 0/1 — supaya
+// menaikkan angka ini ke 4 (setelah Langkah 1b/PoC 4-channel selesai, target
+// sebelum final November) tidak perlu menulis ulang modul-modul itu.
+#define NUM_AUDIO_CHANNELS 1
+
+// Sample rate akuisisi I2S mentah — dipindah ke sini dari audio_acquisition.cpp
+// supaya buffer_manager bisa menghitung kapasitas buffer dari nilai yang sama.
+// ⚠️ belum final, lihat SRS_HARDWARE.md FR-HW-003.
+#define AUDIO_SAMPLE_RATE_HZ 16000
+
+// Ring buffer per-channel.
+//
+// ⚠️ CATATAN PENTING: SDD §4 menyebut kapasitas "~1-2 detik data pada sample
+// rate native sensor" — itu berlaku untuk ring buffer SAMPLE MENTAH per-sample
+// dari driver I2S asli (belum diimplementasikan; audio_acquisition_read() saat
+// ini hanya mengembalikan 1 nilai agregat per batch 512-sample, bukan array
+// sample individual). RING_BUFFER_CAPACITY_PER_CHANNEL di bawah dihitung dari
+// AUDIO_SAMPLE_RATE_HZ langsung (~2 detik sample mentah) TAPI DIKUNCI ke nilai
+// yang muat di DRAM ESP32 classic (~320KB total, sebagian besar dipakai
+// WiFi/FreeRTOS/heap) untuk harness test Fase 2 saat ini yang menulis 1 nilai
+// per batch, bukan 16000 sample/detik.
+//
+// TODO(Langkah 1b / driver I2S per-sample nyata): saat audio_acquisition
+// diperluas untuk mengekspos sample mentah individual (bukan agregat), nilai
+// ini HARUS ditinjau ulang — 2 detik penuh @ 16kHz = 32000 sample/channel
+// (128KB/channel) tidak akan muat untuk >1 channel sekaligus di DRAM ESP32
+// classic. Kemungkinan solusi saat itu: turunkan RING_BUFFER_SECONDS,
+// downsample sebelum buffer, atau pindah ke PSRAM (bila board mendukung).
+#define RING_BUFFER_SECONDS 2
+#define RING_BUFFER_CAPACITY_PER_CHANNEL 2000 // ⚠️ lihat catatan di atas, bukan AUDIO_SAMPLE_RATE_HZ*RING_BUFFER_SECONDS penuh
+#define RING_BUFFER_CAPACITY RING_BUFFER_CAPACITY_PER_CHANNEL
+
+// Ukuran chunk yang dikirim ke backend — FR-HW-011: 1-2 detik, bukan 10 detik
+// penuh (lihat INTEGRATION_CONTRACT.md §2.2 dan ARCHITECTURE_HARDWARE.md §3).
+//
+// ⚠️ Sama seperti RING_BUFFER_CAPACITY di atas: CHUNK_DURATION_MS*AUDIO_SAMPLE_RATE_HZ
+// adalah target PRODUKSI sebenarnya (1 detik sample mentah = 16000 sample), tapi
+// TIDAK dipakai langsung sebagai ukuran buffer baca di harness test Fase 2 —
+// buffer tsb hanya berkapasitas RING_BUFFER_CAPACITY (lihat catatan di atas).
+// CHUNK_SAMPLE_COUNT_TEST dikunci sama dengan RING_BUFFER_CAPACITY supaya
+// harness test tidak mengalokasikan buffer baca yang lebih besar dari yang
+// bisa pernah tersedia. Tinjau ulang bersamaan dengan RING_BUFFER_CAPACITY.
+#define CHUNK_DURATION_MS 1000
+#define CHUNK_SAMPLE_COUNT (AUDIO_SAMPLE_RATE_HZ * CHUNK_DURATION_MS / 1000)
+#define CHUNK_SAMPLE_COUNT_TEST RING_BUFFER_CAPACITY
+
+// channel_id 1-based untuk backend (FR-HW-004, PIN_MAPPING_BOM.md §2), terpisah
+// dari index array 0-based firmware. Hanya index [0] yang valid & terpakai saat
+// NUM_AUDIO_CHANNELS=1 — tiga entri berikutnya siap dipakai begitu channel
+// ditambah, TIDAK boleh diasumsikan aktif sebelum PoC 4-channel (Langkah 1b) selesai.
+static const uint8_t AUDIO_CHANNEL_ID_MAP[4] = {
+    1, // posterior_upper_left
+    2, // posterior_upper_right
+    3, // posterior_lower_left
+    4, // posterior_lower_right
+};
