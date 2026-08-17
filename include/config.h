@@ -109,3 +109,28 @@ static const uint8_t AUDIO_CHANNEL_ID_MAP[4] = {
 // (backend/mosquitto/README.md §2.1). Password koneksi MQTT-nya adalah
 // DEVICE_API_TOKEN (secrets.h), BUKAN username seperti versi sebelumnya.
 #define MQTT_AUTH_USERNAME "pneumacare-device"
+
+// --- Fase 4: Task FreeRTOS dual-core (SDD_HARDWARE.md §2) ---
+//
+// Core 0 = task "acquisition" (I2S/I2C, prioritas tinggi, timing sensitif).
+// Core 1 = task "network" (WS/MQTT/reconnect/heartbeat, prioritas normal,
+// boleh blocking sesekali saat reconnect tanpa mengganggu akuisisi sinyal).
+#define TASK_ACQUISITION_CORE 0
+#define TASK_ACQUISITION_PRIORITY 2
+#define TASK_ACQUISITION_STACK_SIZE 4096
+
+#define TASK_NETWORK_CORE 1
+#define TASK_NETWORK_PRIORITY 1
+#define TASK_NETWORK_STACK_SIZE 8192 // lebih besar: WiFi/WS/MQTT/JSON stack
+
+// Task network tidak punya blocking call natural per-iterasi (beda dengan
+// task acquisition yang di-pace oleh i2s_read() blocking) — delay eksplisit
+// ini mencegah starvation WiFi/FreeRTOS idle task & watchdog trigger.
+#define TASK_NETWORK_LOOP_DELAY_MS 10
+
+// Antrean sample PPG dari task acquisition (Core 0, producer) ke task
+// network (Core 1, consumer yang men-dorongnya ke mqtt_client). Kapasitas
+// dipilih longgar dibanding PPG_BATCH_SIZE supaya jitter jadwal task tidak
+// langsung menyebabkan drop — tapi tetap terbatas (bukan unbounded) sesuai
+// prinsip SDD §4 (drop, bukan menahan RAM tanpa batas, bila network macet).
+#define PPG_SAMPLE_QUEUE_LENGTH (PPG_BATCH_SIZE * 2)

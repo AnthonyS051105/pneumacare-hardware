@@ -17,10 +17,16 @@ bool mqtt_client_is_connected();
 // publish batch ke topik .../ppg/raw (§3.3).
 void mqtt_client_tick();
 
-// Dipanggil dari task acquisition (nanti) atau harness test setiap ada
-// sample PPG baru (mis. dari ppg_acquisition_read()). Non-blocking, hanya
-// menambah ke buffer internal — publish sesungguhnya terjadi di
-// mqtt_client_tick() saat batch penuh.
+// Menambah satu sample PPG ke buffer batch internal (non-blocking, hanya
+// menambah ke array — publish sesungguhnya terjadi di mqtt_client_tick()
+// saat batch penuh).
+//
+// PENTING (Fase 4, dual-core): fungsi ini HARUS hanya dipanggil dari task
+// network (Core 1) — sample PPG yang dibaca task acquisition (Core 0)
+// dikirim lewat FreeRTOS queue (lihat main.cpp, g_ppg_sample_queue) dan
+// di-drain di task network sebelum dipanggilkan ke fungsi ini. Ini menjaga
+// g_ppg_batch/g_ppg_batch_count di mqtt_client.cpp tetap hanya diakses dari
+// satu core, tanpa perlu lock manual tambahan di modul ini.
 void mqtt_client_push_ppg_sample(uint32_t ir_sample);
 
 // Publish heartbeat/status (§3.4) — dipanggil berkala sesuai
