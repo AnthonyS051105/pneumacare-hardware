@@ -4,7 +4,11 @@
 // Lihat SDD_HARDWARE.md §7. Nilai di bawah ini placeholder Fase 0 — sesuaikan saat
 // modul terkait (network_manager, ws_client, mqtt_client, buffer_manager) diimplementasikan.
 
-#define DEVICE_ID "pneumacare-a1b2"
+// Harus sama persis dengan DEV_DEVICE_ID di software/backend/scripts/seed_dev_patient.py
+// — itu device yang sudah ditautkan ke pasien dev di database. Kalau beda,
+// data tetap tersimpan (upsert otomatis di device_registry.py) tapi TIDAK
+// tertaut ke pasien manapun, sehingga tidak akan muncul di dashboard.
+#define DEVICE_ID "pneumacare-dev1"
 
 #define BACKEND_WS_HOST "10.216.222.149"
 #define BACKEND_WS_PORT 5000
