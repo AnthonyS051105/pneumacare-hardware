@@ -36,9 +36,10 @@ void mqtt_client_init() {
   g_mqtt.setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
   g_mqtt.setBufferSize(MQTT_BUFFER_SIZE);
 
-  // Autentikasi minimal — INTEGRATION_CONTRACT.md §6: token dipakai sebagai
-  // username/password MQTT (bukan kelas produksi, cukup untuk demo).
-  if (g_mqtt.connect(g_mqtt_client_id, DEVICE_API_TOKEN, "")) {
+  // Autentikasi minimal — INTEGRATION_CONTRACT.md §6: username tetap
+  // MQTT_AUTH_USERNAME, token dipakai sebagai password (bukan kelas
+  // produksi, cukup untuk demo — lihat backend/mosquitto/README.md §2.1).
+  if (g_mqtt.connect(g_mqtt_client_id, MQTT_AUTH_USERNAME, DEVICE_API_TOKEN)) {
     Serial.println("[mqtt] Terhubung ke broker.");
   } else {
     Serial.printf("[mqtt] Gagal connect awal (state=%d), akan retry via reconnect_tick.\n",
@@ -122,7 +123,7 @@ void mqtt_client_reconnect_tick() {
   Serial.printf("[mqtt] Mencoba reconnect (backoff=%lums, state=%d)...\n",
                 (unsigned long)g_mqtt_backoff.current_delay_ms, g_mqtt.state());
 
-  if (g_mqtt.connect(g_mqtt_client_id, DEVICE_API_TOKEN, "")) {
+  if (g_mqtt.connect(g_mqtt_client_id, MQTT_AUTH_USERNAME, DEVICE_API_TOKEN)) {
     Serial.println("[mqtt] Reconnect berhasil.");
   }
 }

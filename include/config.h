@@ -6,10 +6,10 @@
 
 #define DEVICE_ID "pneumacare-a1b2"
 
-#define BACKEND_WS_HOST "192.168.1.100"
+#define BACKEND_WS_HOST "10.216.222.149"
 #define BACKEND_WS_PORT 5000
 
-#define MQTT_BROKER_HOST "192.168.1.100"
+#define MQTT_BROKER_HOST "10.216.222.149"
 #define MQTT_BROKER_PORT 1883
 
 #define HEARTBEAT_INTERVAL_MS 10000
@@ -104,3 +104,8 @@ static const uint8_t AUDIO_CHANNEL_ID_MAP[4] = {
 // Autentikasi minimal — INTEGRATION_CONTRACT.md §6 (static API token, bukan
 // kelas produksi, cukup untuk demo). Token aktual di secrets.h.
 #define WS_AUTH_HEADER_FMT "Authorization: Bearer %s"
+
+// Username MQTT device — sesuai user yang didaftarkan di password_file broker
+// (backend/mosquitto/README.md §2.1). Password koneksi MQTT-nya adalah
+// DEVICE_API_TOKEN (secrets.h), BUKAN username seperti versi sebelumnya.
+#define MQTT_AUTH_USERNAME "pneumacare-device"
