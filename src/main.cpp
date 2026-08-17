@@ -35,6 +35,14 @@
 
 #define STATUS_PRINT_INTERVAL_MS 1000
 
+// Dikirim lewat FreeRTOS queue dari task acquisition (Core 0) ke task network
+// (Core 1) — red+ir HARUS sepasang (bukan 2 sample_t independen) supaya backend
+// bisa menghitung SpO2 (INTEGRATION_CONTRACT.md §3.3, revisi 17 Agt 2026).
+struct PpgQueueSample {
+  uint32_t red;
+  uint32_t ir;
+};
+
 static QueueHandle_t g_ppg_sample_queue;
 
 // --- Task acquisition (Core 0) ---
@@ -74,7 +82,8 @@ static void task_acquisition(void *pvParameters) {
     // drop, bukan menahan/memblokir akuisisi).
     PpgReadResult ppg = ppg_acquisition_read();
     if (ppg.has_sample) {
-      if (xQueueSend(g_ppg_sample_queue, &ppg.ir, 0) != pdTRUE) {
+      PpgQueueSample q_sample = {ppg.red, ppg.ir};
+      if (xQueueSend(g_ppg_sample_queue, &q_sample, 0) != pdTRUE) {
         // Queue penuh (task network lebih lambat dari akuisisi PPG) —
         // sample terbaru di-drop, konsisten dengan kebijakan buffer_manager.
       }
@@ -103,9 +112,9 @@ static void task_network(void *pvParameters) {
     // Drain semua sample PPG yang menumpuk di queue, dorong ke batch mqtt_client.
     // Hanya task ini yang boleh memanggil mqtt_client_push_ppg_sample() — lihat
     // catatan di mqtt_client.h soal kepemilikan single-core atas state batch.
-    uint32_t ir_sample;
-    while (xQueueReceive(g_ppg_sample_queue, &ir_sample, 0) == pdTRUE) {
-      mqtt_client_push_ppg_sample(ir_sample);
+    PpgQueueSample q_sample;
+    while (xQueueReceive(g_ppg_sample_queue, &q_sample, 0) == pdTRUE) {
+      mqtt_client_push_ppg_sample(q_sample.red, q_sample.ir);
     }
 
     mqtt_client_tick();
@@ -143,7 +152,7 @@ void setup() {
   Serial.println();
   Serial.println("=== Fase 4: integrasi dual-core FreeRTOS ===");
 
-  g_ppg_sample_queue = xQueueCreate(PPG_SAMPLE_QUEUE_LENGTH, sizeof(uint32_t));
+  g_ppg_sample_queue = xQueueCreate(PPG_SAMPLE_QUEUE_LENGTH, sizeof(PpgQueueSample));
   if (g_ppg_sample_queue == NULL) {
     Serial.println("[FATAL] Gagal membuat PPG sample queue.");
     while (true) delay(1000);

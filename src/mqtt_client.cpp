@@ -22,7 +22,8 @@ static char g_topic_ppg[64];
 static char g_topic_status[64];
 static char g_mqtt_client_id[32];
 
-static uint32_t g_ppg_batch[PPG_BATCH_SIZE];
+static uint32_t g_ppg_batch_red[PPG_BATCH_SIZE];
+static uint32_t g_ppg_batch_ir[PPG_BATCH_SIZE];
 static size_t g_ppg_batch_count = 0;
 
 void mqtt_client_init() {
@@ -51,9 +52,11 @@ bool mqtt_client_is_connected() {
   return g_mqtt.connected();
 }
 
-void mqtt_client_push_ppg_sample(uint32_t ir_sample) {
+void mqtt_client_push_ppg_sample(uint32_t red_sample, uint32_t ir_sample) {
   if (g_ppg_batch_count >= PPG_BATCH_SIZE) return; // batch penuh, tunggu tick() flush
-  g_ppg_batch[g_ppg_batch_count++] = ir_sample;
+  g_ppg_batch_red[g_ppg_batch_count] = red_sample;
+  g_ppg_batch_ir[g_ppg_batch_count] = ir_sample;
+  g_ppg_batch_count++;
 }
 
 static void flush_ppg_batch_if_ready() {
@@ -70,9 +73,14 @@ static void flush_ppg_batch_if_ready() {
   doc["device_id"] = DEVICE_ID;
   doc["timestamp_ms"] = network_manager_get_epoch_ms();
   doc["sample_rate_hz"] = PPG_SAMPLE_RATE_HZ;
-  JsonArray samples = doc["samples"].to<JsonArray>();
+  // INTEGRATION_CONTRACT.md §3.3 (revisi 17 Agt 2026): "samples" tetap berarti
+  // infrared (nama dipertahankan untuk backward-compat), "samples_red" baru
+  // ditambahkan — WAJIB panjang & urutan sama dengan "samples" (index sejajar).
+  JsonArray samples_ir = doc["samples"].to<JsonArray>();
+  JsonArray samples_red = doc["samples_red"].to<JsonArray>();
   for (size_t i = 0; i < g_ppg_batch_count; i++) {
-    samples.add(g_ppg_batch[i]);
+    samples_ir.add(g_ppg_batch_ir[i]);
+    samples_red.add(g_ppg_batch_red[i]);
   }
 
   String out;
