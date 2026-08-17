@@ -10,17 +10,21 @@
 // Pin dikonfirmasi manual oleh Tony (2026-08-12) untuk mic #1 — BUKAN nilai final
 // PIN_MAPPING_BOM.md §1.1 (masih sebagian TODO di sana). Update PIN_MAPPING_BOM.md
 // begitu Alfito konfirmasi skematik final.
+//
+// audio_acquisition_read() mengembalikan SAMPLE MENTAH individual (bukan
+// agregat/statistik) — penting untuk Model A backend (mel-spectrogram butuh
+// bentuk gelombang asli, bukan ringkasan volume per batch).
+
+#define AUDIO_ACQUISITION_BATCH_LEN 512 // jumlah sample per pembacaan i2s_read()
 
 struct AudioReadResult {
   size_t samples_read;
-  int32_t min_val;
-  int32_t max_val;
-  int32_t avg_abs;
+  int32_t samples[AUDIO_ACQUISITION_BATCH_LEN]; // sample mentah, sudah di-shift dari 24-bit
 };
 
 void audio_acquisition_init();
 
-// Blocking: membaca satu batch sample dari I2S dan menghitung statistik dasar
-// (min/max/avg_abs) untuk keperluan PoC. Belum ada filtering/buffering — itu
-// modul noise_filter/buffer_manager di Fase 2.
+// Blocking: membaca satu batch sample mentah dari I2S. Konversi 24-bit ->
+// wide int32 (shift >>8) sudah dilakukan di sini; konversi int32 -> int16 LE
+// untuk transmisi dilakukan di ws_client (lihat catatan di ws_client.h).
 AudioReadResult audio_acquisition_read();

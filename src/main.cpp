@@ -54,14 +54,18 @@ static void task_acquisition(void *pvParameters) {
   for (;;) {
     // Audio: i2s_read() di dalam ini blocking (~samples/sample_rate detik),
     // secara alami mem-pace task ini tanpa perlu vTaskDelay tambahan.
+    // Setiap sample MENTAH individual dari batch ditulis ke ring buffer
+    // (bukan diringkas jadi 1 nilai agregat) — Model A backend butuh bentuk
+    // gelombang asli untuk mel-spectrogram, bukan statistik volume.
+    //
+    // ⚠️ Loop channel di sini TIDAK ADA karena audio_acquisition saat ini
+    // hanya membaca 1 sumber I2S fisik (mic #1) — begitu Langkah 1b
+    // (driver 4-channel) selesai, baca per-channel akan dilakukan di
+    // audio_acquisition itu sendiri lalu di-loop di sini berdasarkan
+    // NUM_AUDIO_CHANNELS, bukan diasumsikan tunggal seperti sekarang.
     AudioReadResult r = audio_acquisition_read();
-    if (r.samples_read > 0) {
-      // ⚠️ Loop channel di sini TIDAK ADA karena audio_acquisition saat ini
-      // hanya membaca 1 sumber I2S fisik (mic #1) — begitu Langkah 1b
-      // (driver 4-channel) selesai, baca per-channel akan dilakukan di
-      // audio_acquisition itu sendiri lalu di-loop di sini berdasarkan
-      // NUM_AUDIO_CHANNELS, bukan diasumsikan tunggal seperti sekarang.
-      int32_t filtered = noise_filter_apply(0, r.avg_abs);
+    for (size_t i = 0; i < r.samples_read; i++) {
+      int32_t filtered = noise_filter_apply(0, r.samples[i]);
       buffer_manager_write(0, filtered);
     }
 

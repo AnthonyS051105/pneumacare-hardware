@@ -9,9 +9,8 @@
 
 #define I2S_PORT I2S_NUM_0
 #define I2S_SAMPLE_RATE 16000 // ⚠️ belum final, lihat SRS_HARDWARE.md FR-HW-003
-#define I2S_READ_BUF_LEN 512  // jumlah sample int32 per pembacaan
 
-static int32_t i2s_read_buf[I2S_READ_BUF_LEN];
+static int32_t i2s_read_buf[AUDIO_ACQUISITION_BATCH_LEN];
 
 void audio_acquisition_init() {
   i2s_config_t i2s_config = {
@@ -54,7 +53,8 @@ void audio_acquisition_init() {
 }
 
 AudioReadResult audio_acquisition_read() {
-  AudioReadResult result = {0, 0, 0, 0};
+  AudioReadResult result;
+  result.samples_read = 0;
 
   size_t bytes_read = 0;
   esp_err_t err = i2s_read(I2S_PORT, i2s_read_buf, sizeof(i2s_read_buf),
@@ -66,21 +66,12 @@ AudioReadResult audio_acquisition_read() {
 
   size_t samples_read = bytes_read / sizeof(int32_t);
 
-  // INMP441 output 24-bit signifikan di MSB dari word 32-bit -> geser kanan 8.
-  int32_t min_val = INT32_MAX;
-  int32_t max_val = INT32_MIN;
-  int64_t sum_abs = 0;
-
+  // INMP441 output 24-bit signifikan di MSB dari word 32-bit -> geser kanan 8
+  // supaya mendapat nilai sample yang benar (bukan mentah 32-bit apa adanya).
   for (size_t i = 0; i < samples_read; i++) {
-    int32_t sample = i2s_read_buf[i] >> 8;
-    if (sample < min_val) min_val = sample;
-    if (sample > max_val) max_val = sample;
-    sum_abs += abs(sample);
+    result.samples[i] = i2s_read_buf[i] >> 8;
   }
 
   result.samples_read = samples_read;
-  result.min_val = (samples_read > 0) ? min_val : 0;
-  result.max_val = (samples_read > 0) ? max_val : 0;
-  result.avg_abs = (samples_read > 0) ? (int32_t)(sum_abs / samples_read) : 0;
   return result;
 }

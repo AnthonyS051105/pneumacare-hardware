@@ -17,12 +17,11 @@ static ReconnectBackoff g_ws_backoff;
 static uint32_t g_seq_no[NUM_AUDIO_CHANNELS];
 
 // Buffer sample mentah dibaca dari ring buffer (int32, hasil audio_acquisition)
-// sebelum dikonversi ke int16 LE untuk dikirim. Ukuran dikunci sama dengan
-// CHUNK_SAMPLE_COUNT_TEST (lihat config.h) mengikuti kapasitas ring buffer
-// Fase 2 saat ini — tinjau ulang bersamaan saat driver I2S per-sample nyata
-// diimplementasikan (Langkah 1b).
-static int32_t g_raw_chunk_buf[CHUNK_SAMPLE_COUNT_TEST];
-static int16_t g_pcm16_buf[CHUNK_SAMPLE_COUNT_TEST];
+// sebelum dikonversi ke int16 LE untuk dikirim. Ukuran = CHUNK_SAMPLE_COUNT
+// (1 detik sample mentah, config.h) — chunk_duration_ms di header JSON HARUS
+// benar-benar merepresentasikan durasi 1 detik data, bukan potongan sisa.
+static int32_t g_raw_chunk_buf[CHUNK_SAMPLE_COUNT];
+static int16_t g_pcm16_buf[CHUNK_SAMPLE_COUNT];
 
 static void on_ws_event(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
@@ -61,22 +60,25 @@ bool ws_client_is_connected() {
   return g_ws_connected;
 }
 
-// Mengirim satu chunk untuk channel_index tsb bila ada data siap di
-// buffer_manager. Konversi int32 (hasil audio_acquisition) -> int16 LE
-// dilakukan di sini, EKSPLISIT, sebelum base64 encode — lihat catatan
-// kritis di ws_client.h dan INTEGRATION_CONTRACT.md §2.3.
+// Mengirim satu chunk untuk channel_index tsb HANYA bila buffer sudah berisi
+// minimal CHUNK_SAMPLE_COUNT sample (genap 1 detik) — mengirim potongan lebih
+// kecil akan membuat chunk_duration_ms di header JSON berbohong (selalu diisi
+// CHUNK_DURATION_MS tetap meski data aktualnya lebih pendek), yang akan
+// merusak asumsi backend saat menyusun ulang jadi segmen 5 detik untuk Model A
+// (INTEGRATION_CONTRACT.md §2.2/§4.1). Konversi int32 -> int16 LE dilakukan
+// di sini, EKSPLISIT, sebelum base64 encode — lihat catatan kritis di
+// ws_client.h dan INTEGRATION_CONTRACT.md §2.3.
 static void send_chunk_if_ready(uint8_t channel_index) {
   size_t available = buffer_manager_available(channel_index);
-  if (available == 0) return;
+  if (available < CHUNK_SAMPLE_COUNT) return;
 
   size_t got = buffer_manager_read_chunk(channel_index, g_raw_chunk_buf,
-                                          CHUNK_SAMPLE_COUNT_TEST);
+                                          CHUNK_SAMPLE_COUNT);
   if (got == 0) return;
 
-  // Konversi eksplisit ke int16 LE. audio_acquisition_read() saat ini
-  // mengembalikan statistik agregat (avg_abs, sudah dalam rentang int32 hasil
-  // shift >>8 dari sample 24-bit INMP441 mentah) sebagai proxy sample logis —
-  // clamp ke rentang int16 supaya tidak wrap-around/overflow saat cast.
+  // Konversi eksplisit ke int16 LE dari sample mentah (hasil shift >>8 dari
+  // 24-bit INMP441 di audio_acquisition) — clamp ke rentang int16 supaya
+  // tidak wrap-around/overflow saat cast.
   for (size_t i = 0; i < got; i++) {
     int32_t v = g_raw_chunk_buf[i];
     if (v > INT16_MAX) v = INT16_MAX;

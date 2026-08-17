@@ -28,41 +28,31 @@
 // ⚠️ belum final, lihat SRS_HARDWARE.md FR-HW-003.
 #define AUDIO_SAMPLE_RATE_HZ 16000
 
-// Ring buffer per-channel.
-//
-// ⚠️ CATATAN PENTING: SDD §4 menyebut kapasitas "~1-2 detik data pada sample
-// rate native sensor" — itu berlaku untuk ring buffer SAMPLE MENTAH per-sample
-// dari driver I2S asli (belum diimplementasikan; audio_acquisition_read() saat
-// ini hanya mengembalikan 1 nilai agregat per batch 512-sample, bukan array
-// sample individual). RING_BUFFER_CAPACITY_PER_CHANNEL di bawah dihitung dari
-// AUDIO_SAMPLE_RATE_HZ langsung (~2 detik sample mentah) TAPI DIKUNCI ke nilai
-// yang muat di DRAM ESP32 classic (~320KB total, sebagian besar dipakai
-// WiFi/FreeRTOS/heap) untuk harness test Fase 2 saat ini yang menulis 1 nilai
-// per batch, bukan 16000 sample/detik.
-//
-// TODO(Langkah 1b / driver I2S per-sample nyata): saat audio_acquisition
-// diperluas untuk mengekspos sample mentah individual (bukan agregat), nilai
-// ini HARUS ditinjau ulang — 2 detik penuh @ 16kHz = 32000 sample/channel
-// (128KB/channel) tidak akan muat untuk >1 channel sekaligus di DRAM ESP32
-// classic. Kemungkinan solusi saat itu: turunkan RING_BUFFER_SECONDS,
-// downsample sebelum buffer, atau pindah ke PSRAM (bila board mendukung).
-#define RING_BUFFER_SECONDS 2
-#define RING_BUFFER_CAPACITY_PER_CHANNEL 2000 // ⚠️ lihat catatan di atas, bukan AUDIO_SAMPLE_RATE_HZ*RING_BUFFER_SECONDS penuh
-#define RING_BUFFER_CAPACITY RING_BUFFER_CAPACITY_PER_CHANNEL
-
-// Ukuran chunk yang dikirim ke backend — FR-HW-011: 1-2 detik, bukan 10 detik
-// penuh (lihat INTEGRATION_CONTRACT.md §2.2 dan ARCHITECTURE_HARDWARE.md §3).
-//
-// ⚠️ Sama seperti RING_BUFFER_CAPACITY di atas: CHUNK_DURATION_MS*AUDIO_SAMPLE_RATE_HZ
-// adalah target PRODUKSI sebenarnya (1 detik sample mentah = 16000 sample), tapi
-// TIDAK dipakai langsung sebagai ukuran buffer baca di harness test Fase 2 —
-// buffer tsb hanya berkapasitas RING_BUFFER_CAPACITY (lihat catatan di atas).
-// CHUNK_SAMPLE_COUNT_TEST dikunci sama dengan RING_BUFFER_CAPACITY supaya
-// harness test tidak mengalokasikan buffer baca yang lebih besar dari yang
-// bisa pernah tersedia. Tinjau ulang bersamaan dengan RING_BUFFER_CAPACITY.
-#define CHUNK_DURATION_MS 1000
+// Ukuran chunk yang dikirim ke backend per pesan JSON — FR-HW-011: chunk
+// kecil, bukan 10 detik penuh (INTEGRATION_CONTRACT.md §2.2). Dipilih
+// 250ms (bukan 1000ms) — masih di semangat "chunk kecil" kontrak, tapi
+// membuat buffer kerja base64 di ws_client (yang butuh alokasi kontigu
+// utuh per chunk) tetap kecil: 4000 sample x (4+2) byte = 24KB, bukan 96KB
+// untuk 1000ms. Backend tetap menyusun ulang jadi segmen 5 detik untuk
+// Model A dari banyak chunk kecil (§4.1) — pengiriman lebih sering, bukan
+// pelanggaran kontrak.
+#define CHUNK_DURATION_MS 250
 #define CHUNK_SAMPLE_COUNT (AUDIO_SAMPLE_RATE_HZ * CHUNK_DURATION_MS / 1000)
-#define CHUNK_SAMPLE_COUNT_TEST RING_BUFFER_CAPACITY
+
+// Ring buffer per-channel — SAMPLE MENTAH individual (bukan agregat lagi
+// sejak audio_acquisition diperluas untuk mengekspos tiap sample I2S,
+// lihat audio_acquisition.h). Kapasitas = 1.5x CHUNK_SAMPLE_COUNT (headroom
+// di atas 1 chunk supaya buffer tidak selalu pas penuh tepat saat siap
+// dikirim — ada slack untuk jitter task scheduling/network).
+//
+// ⚠️ Nilai ini dihitung untuk NUM_AUDIO_CHANNELS=1 (checkpoint 50%). 6000
+// sample x 4 byte = 24KB — muat nyaman untuk 1 channel di DRAM ESP32
+// classic (~320KB total, sisanya dipakai WiFi/FreeRTOS/heap), TAPI TIDAK
+// akan otomatis muat bila NUM_AUDIO_CHANNELS naik ke 4 tanpa penyesuaian
+// ulang (4x24KB=96KB untuk ring buffer saja, belum termasuk buffer kerja
+// ws_client x4 juga). TODO(Langkah 1b): hitung ulang total DRAM budget
+// saat naik ke 4 channel — jangan asumsikan nilai ini otomatis aman.
+#define RING_BUFFER_CAPACITY (CHUNK_SAMPLE_COUNT + CHUNK_SAMPLE_COUNT / 2)
 
 // channel_id 1-based untuk backend (FR-HW-004, PIN_MAPPING_BOM.md §2), terpisah
 // dari index array 0-based firmware. Hanya index [0] yang valid & terpakai saat
@@ -117,7 +107,10 @@ static const uint8_t AUDIO_CHANNEL_ID_MAP[4] = {
 // boleh blocking sesekali saat reconnect tanpa mengganggu akuisisi sinyal).
 #define TASK_ACQUISITION_CORE 0
 #define TASK_ACQUISITION_PRIORITY 2
-#define TASK_ACQUISITION_STACK_SIZE 4096
+// 8192 (bukan 4096): AudioReadResult sekarang berisi array 512 sample int32
+// (~2KB) sebagai local variable per iterasi loop — dengan call stack driver
+// I2S/I2C di atasnya, 4096 terlalu mepet untuk headroom aman.
+#define TASK_ACQUISITION_STACK_SIZE 8192
 
 #define TASK_NETWORK_CORE 1
 #define TASK_NETWORK_PRIORITY 1
