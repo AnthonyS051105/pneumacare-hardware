@@ -74,3 +74,33 @@ static const uint8_t AUDIO_CHANNEL_ID_MAP[4] = {
     3, // posterior_lower_left
     4, // posterior_lower_right
 };
+
+// --- Fase 3: Network (SDD_HARDWARE.md §3, INTEGRATION_CONTRACT.md) ---
+
+// Websocket audio — INTEGRATION_CONTRACT.md §2.1/§2.3 (format JSON+pcm_base64,
+// FINAL 12 Agt 2026 — binary frame TIDAK diimplementasikan, jangan dikerjakan).
+#define WS_PATH "/ws/audio"
+
+// MQTT topik — INTEGRATION_CONTRACT.md §3.2. device_id disisipkan runtime.
+#define MQTT_TOPIC_PPG_FMT "pneumacare/%s/ppg/raw"
+#define MQTT_TOPIC_STATUS_FMT "pneumacare/%s/status"
+
+// PPG — INTEGRATION_CONTRACT.md §3.3. ⚠️ sample_rate_hz PPG belum final di
+// proposal (nilai contoh umum, bukan tervalidasi tim) — sesuaikan bila
+// Alfito/datasheet MAX30102 menentukan lain. Batch size dipilih supaya
+// publish MQTT tidak terlalu sering (mis. tiap ~1 detik pada 100Hz).
+#define PPG_SAMPLE_RATE_HZ 100
+#define PPG_BATCH_SIZE 100
+
+// NTP — FR-HW-025 (best-effort, boleh lanjut walau gagal).
+#define NTP_SERVER "pool.ntp.org"
+#define NTP_SYNC_TIMEOUT_MS 10000
+
+// Reconnect — FR-HW-024, INTEGRATION_CONTRACT.md §2.4: 1s,2s,4s,...cap 30s.
+#define RECONNECT_BACKOFF_INITIAL_MS 1000
+#define RECONNECT_BACKOFF_MAX_MS 30000
+#define RECONNECT_BACKOFF_MULTIPLIER 2
+
+// Autentikasi minimal — INTEGRATION_CONTRACT.md §6 (static API token, bukan
+// kelas produksi, cukup untuk demo). Token aktual di secrets.h.
+#define WS_AUTH_HEADER_FMT "Authorization: Bearer %s"
