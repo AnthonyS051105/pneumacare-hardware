@@ -12,7 +12,14 @@
 
 // Buffer MQTT default (MQTT_MAX_PACKET_SIZE=256) terlalu kecil untuk payload
 // PPG_BATCH_SIZE sample — dinaikkan lewat setBufferSize() di init.
-#define MQTT_BUFFER_SIZE 1024
+//
+// 2048 (bukan 1024 seperti sebelumnya): sejak INTEGRATION_CONTRACT.md §3.3
+// (revisi 17 Agt 2026) menambahkan "samples_red" berdampingan dengan
+// "samples" (IR), payload PPG JSON jadi 2x lipat ukurannya (~1700 byte untuk
+// PPG_BATCH_SIZE=100, dua array uint32 + overhead JSON) — 1024 diam-diam
+// membuat publish() gagal (PubSubClient tidak print error, hanya return
+// false) sehingga topic ppg/raw kosong total walau akuisisi sensor normal.
+#define MQTT_BUFFER_SIZE 2048
 
 static WiFiClient g_wifi_client;
 static PubSubClient g_mqtt(g_wifi_client);
@@ -85,7 +92,12 @@ static void flush_ppg_batch_if_ready() {
 
   String out;
   serializeJson(doc, out);
-  g_mqtt.publish(g_topic_ppg, out.c_str());
+  if (!g_mqtt.publish(g_topic_ppg, out.c_str())) {
+    // PubSubClient TIDAK melempar error detail — payload > MQTT_BUFFER_SIZE
+    // adalah penyebab paling umum (lihat catatan MQTT_BUFFER_SIZE di atas).
+    Serial.printf("[mqtt] Gagal publish ppg/raw (payload=%u byte, buffer=%u byte).\n",
+                  (unsigned)out.length(), (unsigned)MQTT_BUFFER_SIZE);
+  }
 
   g_ppg_batch_count = 0;
 }
