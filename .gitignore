@@ -6,3 +6,7 @@
 
 # Kredensial — jangan pernah commit (lihat CLAUDE.md & SDD_HARDWARE.md §7)
 include/secrets.h
+
+# file khusus lokal
+/docs/
+*.local.*
