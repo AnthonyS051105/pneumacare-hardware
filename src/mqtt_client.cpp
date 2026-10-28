@@ -1,149 +1,146 @@
 #include "mqtt_client.h"
 
 #include <Arduino.h>
-#include <WiFi.h>
 #include <PubSubClient.h>
-#include <ArduinoJson.h>
+#include <WiFi.h>
 #include <config.h>
 #include <secrets.h>
 
 #include "network_manager.h"
+#include "ppg_payload.h"
 #include "reconnect_manager.h"
-
-// Buffer MQTT default (MQTT_MAX_PACKET_SIZE=256) terlalu kecil untuk payload
-// PPG_BATCH_SIZE sample — dinaikkan lewat setBufferSize() di init.
-//
-// 2048 (bukan 1024 seperti sebelumnya): sejak INTEGRATION_CONTRACT.md §3.3
-// (revisi 17 Agt 2026) menambahkan "samples_red" berdampingan dengan
-// "samples" (IR), payload PPG JSON jadi 2x lipat ukurannya (~1700 byte untuk
-// PPG_BATCH_SIZE=100, dua array uint32 + overhead JSON) — 1024 diam-diam
-// membuat publish() gagal (PubSubClient tidak print error, hanya return
-// false) sehingga topic ppg/raw kosong total walau akuisisi sensor normal.
-#define MQTT_BUFFER_SIZE 2048
 
 static WiFiClient g_wifi_client;
 static PubSubClient g_mqtt(g_wifi_client);
 static ReconnectBackoff g_mqtt_backoff;
+static const char *g_device_id = DEVICE_ID;
 
 static char g_topic_ppg[64];
 static char g_topic_status[64];
-static char g_mqtt_client_id[32];
+static char g_will_payload[128];
+// PubSubClient merakit paket di buffer internalnya sendiri (MQTT_BUFFER_SIZE),
+// payload disiapkan di sini lebih dulu.
+static char g_payload[MQTT_BUFFER_SIZE];
 
-static uint32_t g_ppg_batch_red[PPG_BATCH_SIZE];
-static uint32_t g_ppg_batch_ir[PPG_BATCH_SIZE];
-static size_t g_ppg_batch_count = 0;
+static uint32_t g_batch_red[PPG_BATCH_SIZE];
+static uint32_t g_batch_ir[PPG_BATCH_SIZE];
+static size_t g_batch_count = 0;
+static uint64_t g_batch_first_sample_ms = 0;
 
-void mqtt_client_init() {
-  reconnect_backoff_reset(&g_mqtt_backoff);
-  g_ppg_batch_count = 0;
+static uint32_t g_last_heartbeat_ms = 0;
+static MqttClientStats g_stats = {0, 0, 0, 0};
 
-  snprintf(g_topic_ppg, sizeof(g_topic_ppg), MQTT_TOPIC_PPG_FMT, DEVICE_ID);
-  snprintf(g_topic_status, sizeof(g_topic_status), MQTT_TOPIC_STATUS_FMT, DEVICE_ID);
-  snprintf(g_mqtt_client_id, sizeof(g_mqtt_client_id), "%s", DEVICE_ID);
+static void publish_status_online(int battery_pct) {
+  size_t len = status_payload_build(g_payload, sizeof(g_payload), g_device_id, "online",
+                                    network_manager_get_epoch_ms(), true, battery_pct);
+  // retained=true (§3.2): dashboard yang baru subscribe tetap tahu status terakhir.
+  if (len == 0 || !g_mqtt.publish(g_topic_status, (const uint8_t *)g_payload, len, true)) {
+    g_stats.publish_failures++;
+  }
+}
+
+static bool try_connect() {
+  // Last Will "offline" retained, tanpa battery_pct (lihat status_payload_build).
+  bool ok = g_mqtt.connect(g_device_id, MQTT_AUTH_USERNAME, DEVICE_API_TOKEN, g_topic_status,
+                           /*willQos=*/1, /*willRetain=*/true, g_will_payload,
+                           /*cleanSession=*/true);
+  if (ok) {
+    g_stats.connects++;
+    reconnect_backoff_reset(&g_mqtt_backoff);
+    Serial.printf("[mqtt] Terhubung ke broker %s:%d.\n", MQTT_BROKER_HOST, MQTT_BROKER_PORT);
+  }
+  return ok;
+}
+
+void mqtt_client_init(const char *device_id) {
+  g_device_id = device_id;
+  reconnect_backoff_init(&g_mqtt_backoff, RECONNECT_BACKOFF_INITIAL_MS, RECONNECT_BACKOFF_MAX_MS);
+  g_batch_count = 0;
+
+  snprintf(g_topic_ppg, sizeof(g_topic_ppg), MQTT_TOPIC_PPG_FMT, g_device_id);
+  snprintf(g_topic_status, sizeof(g_topic_status), MQTT_TOPIC_STATUS_FMT, g_device_id);
+  // timestamp 0: Last Will disusun sekali saat connect, broker tidak mengisi
+  // waktu — backend memakai waktu terima untuk transisi status.
+  status_payload_build(g_will_payload, sizeof(g_will_payload), g_device_id, "offline", 0, false, 0);
 
   g_mqtt.setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
   g_mqtt.setBufferSize(MQTT_BUFFER_SIZE);
-
-  // Autentikasi minimal — INTEGRATION_CONTRACT.md §6: username tetap
-  // MQTT_AUTH_USERNAME, token dipakai sebagai password (bukan kelas
-  // produksi, cukup untuk demo — lihat backend/mosquitto/README.md §2.1).
-  if (g_mqtt.connect(g_mqtt_client_id, MQTT_AUTH_USERNAME, DEVICE_API_TOKEN)) {
-    Serial.println("[mqtt] Terhubung ke broker.");
-  } else {
-    Serial.printf("[mqtt] Gagal connect awal (state=%d), akan retry via reconnect_tick.\n",
-                  g_mqtt.state());
-  }
+  g_mqtt.setKeepAlive(MQTT_KEEPALIVE_S);
+  // Batasi lama blocking menunggu CONNACK (default library 15 detik).
+  g_mqtt.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
 }
 
 bool mqtt_client_is_connected() {
   return g_mqtt.connected();
 }
 
-void mqtt_client_push_ppg_sample(uint32_t red_sample, uint32_t ir_sample) {
-  if (g_ppg_batch_count >= PPG_BATCH_SIZE) return; // batch penuh, tunggu tick() flush
-  g_ppg_batch_red[g_ppg_batch_count] = red_sample;
-  g_ppg_batch_ir[g_ppg_batch_count] = ir_sample;
-  g_ppg_batch_count++;
-}
+static void flush_batch() {
+  if (g_batch_count == 0) return;
 
-static void flush_ppg_batch_if_ready() {
-  if (g_ppg_batch_count < PPG_BATCH_SIZE) return;
   if (!g_mqtt.connected()) {
-    // Backend belum siap menerima — buang batch supaya tidak menahan RAM
-    // tanpa batas (kebijakan sama seperti drop-oldest di buffer_manager,
-    // SDD §4), bukan menumpuk sample PPG lama yang sudah tidak relevan.
-    g_ppg_batch_count = 0;
+    // Broker tidak terhubung: buang batch (bukan menahan RAM tanpa batas,
+    // konsisten dengan kebijakan drop di buffer_manager, SDD §4).
+    g_stats.samples_dropped += g_batch_count;
+    g_batch_count = 0;
     return;
   }
 
-  JsonDocument doc;
-  doc["device_id"] = DEVICE_ID;
-  doc["timestamp_ms"] = network_manager_get_epoch_ms();
-  doc["sample_rate_hz"] = PPG_SAMPLE_RATE_HZ;
-  // INTEGRATION_CONTRACT.md §3.3 (revisi 17 Agt 2026): "samples" tetap berarti
-  // infrared (nama dipertahankan untuk backward-compat), "samples_red" baru
-  // ditambahkan — WAJIB panjang & urutan sama dengan "samples" (index sejajar).
-  JsonArray samples_ir = doc["samples"].to<JsonArray>();
-  JsonArray samples_red = doc["samples_red"].to<JsonArray>();
-  for (size_t i = 0; i < g_ppg_batch_count; i++) {
-    samples_ir.add(g_ppg_batch_ir[i]);
-    samples_red.add(g_ppg_batch_red[i]);
+  size_t len = ppg_payload_build(g_payload, sizeof(g_payload), g_device_id,
+                                 g_batch_first_sample_ms, PPG_SAMPLE_RATE_HZ, g_batch_ir,
+                                 g_batch_red, g_batch_count);
+  if (len == 0) {
+    Serial.printf("[mqtt] BUG: payload PPG melebihi buffer %u byte.\n", (unsigned)MQTT_BUFFER_SIZE);
+    g_stats.publish_failures++;
+  } else if (!g_mqtt.publish(g_topic_ppg, (const uint8_t *)g_payload, len, false)) {
+    // PubSubClient hanya mengembalikan false tanpa detail — penyebab umum:
+    // koneksi putus di tengah atau paket > MQTT_BUFFER_SIZE.
+    g_stats.publish_failures++;
+    Serial.printf("[mqtt] Gagal publish ppg/raw (payload=%u byte).\n", (unsigned)len);
+  } else {
+    g_stats.batches_published++;
   }
-
-  String out;
-  serializeJson(doc, out);
-  if (!g_mqtt.publish(g_topic_ppg, out.c_str())) {
-    // PubSubClient TIDAK melempar error detail — payload > MQTT_BUFFER_SIZE
-    // adalah penyebab paling umum (lihat catatan MQTT_BUFFER_SIZE di atas).
-    Serial.printf("[mqtt] Gagal publish ppg/raw (payload=%u byte, buffer=%u byte).\n",
-                  (unsigned)out.length(), (unsigned)MQTT_BUFFER_SIZE);
-  }
-
-  g_ppg_batch_count = 0;
+  g_batch_count = 0;
 }
 
-void mqtt_client_publish_heartbeat() {
-  if (!g_mqtt.connected()) return;
+void mqtt_client_push_ppg_sample(uint32_t red_sample, uint32_t ir_sample) {
+  if (g_batch_count >= PPG_BATCH_SIZE) flush_batch();
 
-  JsonDocument doc;
-  doc["device_id"] = DEVICE_ID;
-  doc["status"] = "online";
-  doc["timestamp_ms"] = network_manager_get_epoch_ms();
-  // ⚠️ battery_pct: PIN_MAPPING_BOM.md §1.3 "Battery voltage sense (ADC)"
-  // masih TODO (belum dikonfirmasi Alfito) — FR-HW-030 bersifat opsional.
-  // Placeholder eksplisit -1 (bukan angka valid) sampai sirkuit pembagi
-  // tegangan tersedia, supaya backend tidak salah mengira ini nilai nyata.
-  doc["battery_pct"] = -1;
-
-  String out;
-  serializeJson(doc, out);
-  // retained=true sesuai §3.2: dashboard perlu tahu status terakhir meski
-  // baru subscribe setelah device sudah online.
-  g_mqtt.publish(g_topic_status, out.c_str(), true);
+  if (g_batch_count == 0) {
+    // Perkiraan waktu tangkap sample pertama batch (latensi antrean ~ms).
+    g_batch_first_sample_ms = network_manager_get_epoch_ms();
+  }
+  g_batch_red[g_batch_count] = red_sample;
+  g_batch_ir[g_batch_count] = ir_sample;
+  g_batch_count++;
 }
 
-void mqtt_client_tick() {
+void mqtt_client_tick(int battery_pct) {
+  uint32_t now = millis();
+
   if (g_mqtt.connected()) {
     g_mqtt.loop();
-    flush_ppg_batch_if_ready();
-  }
-}
-
-void mqtt_client_reconnect_tick() {
-  if (g_mqtt.connected()) {
-    reconnect_backoff_reset(&g_mqtt_backoff);
+    if (g_batch_count >= PPG_BATCH_SIZE) flush_batch();
+    if (now - g_last_heartbeat_ms >= HEARTBEAT_INTERVAL_MS) {
+      g_last_heartbeat_ms = now;
+      publish_status_online(battery_pct);
+    }
     return;
   }
-  if (!network_manager_is_connected()) return; // tunggu WiFi pulih dulu
 
-  uint32_t now = millis();
+  if (!network_manager_is_connected()) return; // tunggu WiFi pulih dulu
   if (!reconnect_backoff_should_attempt(&g_mqtt_backoff, now)) return;
 
   reconnect_backoff_notify_attempt(&g_mqtt_backoff, now);
-  Serial.printf("[mqtt] Mencoba reconnect (backoff=%lums, state=%d)...\n",
-                (unsigned long)g_mqtt_backoff.current_delay_ms, g_mqtt.state());
-
-  if (g_mqtt.connect(g_mqtt_client_id, MQTT_AUTH_USERNAME, DEVICE_API_TOKEN)) {
-    Serial.println("[mqtt] Reconnect berhasil.");
+  if (try_connect()) {
+    // Langsung umumkan online (menimpa Last Will "offline" yang mungkin retained).
+    g_last_heartbeat_ms = now;
+    publish_status_online(battery_pct);
+  } else {
+    Serial.printf("[mqtt] Gagal connect (state=%d) — coba lagi dalam %lu ms.\n", g_mqtt.state(),
+                  (unsigned long)g_mqtt_backoff.current_delay_ms);
   }
+}
+
+void mqtt_client_get_stats(MqttClientStats *out) {
+  *out = g_stats;
 }

@@ -3,27 +3,31 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Wi-Fi connect + NTP sync — FR-HW-020/025, SDD_HARDWARE.md §3 (state machine
-// WIFI_CONNECTING -> NTP_SYNC -> SENSOR_INIT -> STREAMING).
+// Wi-Fi connect + NTP sync — FR-HW-020/025, SDD_HARDWARE.md §3.
 //
-// NTP bersifat best-effort (FR-HW-025 "SEBAIKNYA"): kegagalan NTP TIDAK
-// menghentikan boot, firmware tetap lanjut ke streaming, hanya dicatat log.
+// Non-blocking: init hanya memulai koneksi; status dipantau lewat
+// network_manager_tick() dari loop task network. (Versi lama memblokir task
+// network tanpa batas sampai WiFi tersambung, sehingga LED status, watchdog,
+// dan log tidak bisa berjalan selama itu.)
+//
+// NTP memakai SNTP bawaan ESP-IDF yang berjalan di latar belakang dan
+// sinkron ulang berkala sendiri; best-effort (FR-HW-025 "SEBAIKNYA").
 
-// Blocking: menunggu koneksi WiFi awal (dipanggil sekali saat boot, sebelum
-// STREAMING). Untuk reconnect setelah putus di tengah jalan, panggil
-// network_manager_reconnect_tick() secara berkala dari loop non-blocking.
 void network_manager_init();
+
+// Dipanggil berkala: reconnect WiFi dengan exponential backoff (FR-HW-024)
+// dan mencatat transisi koneksi ke serial log.
+void network_manager_tick();
 
 bool network_manager_is_connected();
 
-// Dipanggil berkala dari loop utama (Core 1 nanti). Non-blocking: memakai
-// reconnect_manager (exponential backoff) internal, hanya mencoba connect
-// ulang saat WiFi terputus DAN backoff delay sudah lewat.
-void network_manager_reconnect_tick();
+// Lama WiFi terputus terus-menerus (ms), 0 bila sedang terhubung.
+uint32_t network_manager_disconnected_duration_ms();
 
-// Unix epoch ms saat ini. Sumber: NTP bila sinkron berhasil (lihat
-// network_manager_is_time_synced()), fallback ke millis() sejak boot (tidak
-// akurat secara absolut) bila NTP belum/tidak pernah berhasil — FR-HW-025.
+int network_manager_rssi();
+
+// Unix epoch ms. Bila jam belum tersinkron NTP, fallback ke millis() sejak boot
+// (tidak absolut) — backend memakai waktu terima bila timestamp tidak masuk akal.
 uint64_t network_manager_get_epoch_ms();
 
 bool network_manager_is_time_synced();
