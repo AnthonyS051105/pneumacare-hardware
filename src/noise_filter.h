@@ -2,18 +2,22 @@
 
 #include <stdint.h>
 
-// Filtering ringan — FR-HW-010. Baseline: DC-offset removal (single-pole
-// high-pass) sesuai catatan SRS_HARDWARE.md FR-HW-010 ("mulai dari high-pass
-// filter sederhana... didiskusikan lebih lanjut bila perlu lebih canggih").
+// Filtering ringan — FR-HW-010. High-pass Butterworth orde 2 (biquad) untuk
+// membuang DC offset & rumble frekuensi rendah (gerakan tubuh/gesekan vest),
+// plus low-pass opsional. Pengganti DC blocker 1-pole versi lama: roll-off
+// -12 dB/oktaf (bukan -6) sehingga rumble di bawah cutoff teredam jauh lebih
+// kuat tanpa menggeser cutoff ke dalam pita suara napas.
 //
-// Channel-agnostic: state filter disimpan per channel_index (0-based, harus
-// < NUM_AUDIO_CHANNELS). Sama seperti buffer_manager, hanya index 0 dipakai
-// saat ini tapi implementasi sudah di-loop untuk NUM_AUDIO_CHANNELS sejak awal.
+// State filter disimpan per channel_index (0-based, < NUM_AUDIO_CHANNELS).
+// Filtering berat (adaptive, denoising) sengaja TIDAK di firmware — itu domain
+// backend (ARCHITECTURE_HARDWARE.md §3).
 
-void noise_filter_init();
+// Menghitung koefisien & mereset state. cutoff <= 0 menonaktifkan filter tsb.
+void noise_filter_init(float sample_rate_hz, float hpf_cutoff_hz, float lpf_cutoff_hz);
 
-// Menerapkan filter DC-offset ke satu sample mentah dari channel tsb dan
-// mengembalikan hasilnya. State filter (running DC estimate) per channel
-// otomatis ter-update di setiap panggilan — panggil berurutan per sample,
-// jangan diacak antar channel dalam satu aliran filter.
-int32_t noise_filter_apply(uint8_t channel_index, int32_t raw_sample);
+// Reset state semua channel (koefisien tetap).
+void noise_filter_reset();
+
+// Memfilter satu sample (domain 24-bit, sebagai float). Panggil berurutan per
+// sample untuk tiap channel — jangan mencampur aliran antar channel.
+float noise_filter_apply(uint8_t channel_index, float sample);

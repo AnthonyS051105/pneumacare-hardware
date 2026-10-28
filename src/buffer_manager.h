@@ -5,31 +5,44 @@
 
 // Ring buffer per-channel & chunking — FR-HW-011, lihat SDD_HARDWARE.md §4.
 //
-// Channel-agnostic by design: semua fungsi menerima channel_index (0-based,
-// harus < NUM_AUDIO_CHANNELS dari config.h). Saat ini hanya index 0 dipakai
-// (1 mikrofon fisik tersedia untuk checkpoint 50%), tapi implementasi internal
-// sudah di-loop untuk NUM_AUDIO_CHANNELS channel sejak awal — menaikkan
-// NUM_AUDIO_CHANNELS ke 4 tidak butuh perubahan di modul ini.
+// Menyimpan sample PCM int16 yang SUDAH difilter & dikonversi (bukan int32
+// mentah) — separuh memori dibanding versi lama, sehingga 4 channel x 500 ms
+// muat nyaman di heap ESP32. Buffer dialokasikan di heap saat init (bukan array
+// statis) supaya tidak membebani segmen DRAM statis yang terbatas.
 //
-// Kebijakan saat buffer penuh: drop data TERLAMA (bukan menahan penuh sampai
-// crash), sesuai SDD §4. Setiap event drop dicatat lewat drop_count per channel.
+// Producer (task acquisition, Core 0) menulis per blok; consumer (task network,
+// Core 1) membaca per chunk. Kebijakan saat penuh: drop sample TERLAMA (SDD §4),
+// jumlah sample yang di-drop dicatat per channel untuk diagnostik.
 
-void buffer_manager_init();
+// Mengalokasikan num_channels ring buffer berkapasitas capacity sample.
+// Mengembalikan false bila alokasi gagal. Aman dipanggil ulang (realokasi).
+bool buffer_manager_init(uint8_t num_channels, size_t capacity);
 
-// Menulis satu sample ke ring buffer channel tsb. Non-blocking, aman dipanggil
-// dari task acquisition (Core 0). Bila buffer penuh, sample TERLAMA di-drop
-// otomatis untuk memberi ruang bagi sample baru (drop_count bertambah).
-void buffer_manager_write(uint8_t channel_index, int32_t sample);
+// Membebaskan seluruh buffer (dipakai unit test / re-init).
+void buffer_manager_deinit();
 
-// Jumlah sample yang saat ini tersedia untuk dibaca di channel tsb.
+size_t buffer_manager_capacity();
+
+// Menulis n sample ke channel tsb. Non-blocking. Bila tidak muat, sample
+// terlama di-drop; bila n > kapasitas, hanya `kapasitas` sample terbaru disimpan.
+void buffer_manager_write_block(uint8_t channel_index, const int16_t *samples, size_t n);
+
 size_t buffer_manager_available(uint8_t channel_index);
 
-// Menyalin hingga max_samples sample tertua dari ring buffer ke out_buf, lalu
-// menghapusnya dari buffer (consume). Mengembalikan jumlah sample yang benar-benar
-// disalin. Dipanggil dari task network (Core 1) saat siap kirim chunk.
-size_t buffer_manager_read_chunk(uint8_t channel_index, int32_t *out_buf,
-                                  size_t max_samples);
+// Menyalin & meng-consume hingga max_samples sample tertua ke out_buf.
+// Mengembalikan jumlah sample yang benar-benar disalin.
+// sample_start (opsional) diambil DALAM lock yang sama dengan PCM: indeks
+// sample pertama sejak boot, termasuk sample terbuang/disupresi. Jangan baca
+// drop_count terpisah sebagai metadata chunk (race dengan producer).
+size_t buffer_manager_read_chunk(uint8_t channel_index, int16_t *out_buf, size_t max_samples,
+                                 uint64_t *sample_start = NULL);
 
-// Total event drop-oldest sejak boot untuk channel tsb — indikasi network
-// lebih lambat dari akuisisi, dipakai untuk diagnostik/status payload (SDD §4).
+// Tandai frame akuisisi yang sengaja disupresi (mic faulty); batalkan isi lama
+// supaya audio sebelum/sesudah celah tidak disambung sebagai kontinu.
+void buffer_manager_skip_samples(uint8_t channel_index, size_t n);
+
+// Mengosongkan isi channel tsb (mis. saat koneksi belum siap streaming).
+void buffer_manager_clear(uint8_t channel_index);
+
+// Total sample yang di-drop sejak boot (indikasi network lebih lambat dari akuisisi).
 uint32_t buffer_manager_get_drop_count(uint8_t channel_index);
