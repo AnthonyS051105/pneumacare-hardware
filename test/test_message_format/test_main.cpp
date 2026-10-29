@@ -210,8 +210,31 @@ void test_audio_continuity_metadata_roundtrip_and_size() {
   delete[] out;
 }
 
+static void test_binary_pcm_header_and_signed_roundtrip() {
+  AudioFrameHeader h = {"test-device", 2, 16000, 1700000000000ULL, 7, 250,
+                        "0123456789abcdef", 28000};
+  int16_t pcm[] = {-32768, 32767, 0, -1};
+  uint8_t out[1024];
+  size_t len = audio_frame_build_binary(out, sizeof(out), h, pcm, 4);
+  TEST_ASSERT_GREATER_THAN(6, len);
+  TEST_ASSERT_EQUAL_MEMORY("PCA1", out, 4);
+  size_t header_len = out[4] | ((size_t)out[5] << 8);
+  JsonDocument doc;
+  TEST_ASSERT_EQUAL(DeserializationError::Ok,
+                    deserializeJson(doc, out + 6, header_len).code());
+  TEST_ASSERT_EQUAL_STRING("test-device", doc["device_id"].as<const char *>());
+  TEST_ASSERT_EQUAL(28000, doc["sample_start"].as<uint64_t>());
+  TEST_ASSERT_TRUE(doc["pcm_base64"].isNull());
+  uint8_t expected[] = {0,128,255,127,0,0,255,255};
+  TEST_ASSERT_EQUAL(6 + header_len + sizeof(expected), len);
+  TEST_ASSERT_EQUAL_MEMORY(expected, out + 6 + header_len, sizeof(expected));
+  TEST_ASSERT_EQUAL(0, audio_frame_build_binary(out, 6, h, pcm, 4));
+}
+
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_binary_pcm_header_and_signed_roundtrip);
   RUN_TEST(test_audio_continuity_metadata_roundtrip_and_size);
   RUN_TEST(test_audio_frame_has_all_required_fields);
   RUN_TEST(test_audio_frame_pcm_roundtrip_matches_backend_decoder);

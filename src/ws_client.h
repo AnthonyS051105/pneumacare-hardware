@@ -5,7 +5,7 @@
 
 // Websocket client audio — FR-HW-021, INTEGRATION_CONTRACT.md §2.
 //
-// Format pesan: JSON + "pcm_base64" (✅ FINAL §2.3, bukan binary frame), disusun
+// Format pesan: PCA1 binary PCM atau JSON/base64 legacy, disusun
 // oleh audio_frame.cpp. PCM selalu int16 little-endian (backend memvalidasi
 // bit_depth). Mengirim chunk dari SEMUA channel yang punya data
 // di buffer_manager (loop NUM_AUDIO_CHANNELS); channel yang mic-nya terdeteksi
@@ -20,6 +20,8 @@ struct WsClientStats {
   uint32_t connects;
   uint32_t max_build_us;
   uint32_t max_send_us;
+  uint32_t max_pump_us;
+  uint32_t max_loop_us;
 };
 
 // device_id disuntikkan supaya program test fase 3 bisa memakai DIAG_DEVICE_ID

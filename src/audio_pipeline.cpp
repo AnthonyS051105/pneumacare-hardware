@@ -7,6 +7,7 @@
 #include "audio_pcm.h"
 #include "buffer_manager.h"
 #include "channel_health.h"
+#include "capture_scheduler.h"
 #include "noise_filter.h"
 
 static int32_t g_raw[NUM_AUDIO_CHANNELS][AUDIO_I2S_FRAMES_PER_READ];
@@ -30,8 +31,13 @@ bool audio_pipeline_init() {
 
 size_t audio_pipeline_process_block() {
   size_t frames = audio_acquisition_read(g_raw);
+  if (AUDIO_PERIODIC_CAPTURE) {
+    capture_note_source_errors(audio_acquisition_get_dma_overflows(),
+                               audio_acquisition_get_read_errors());
+  }
   if (frames == 0) return 0;
 
+  size_t retain = AUDIO_PERIODIC_CAPTURE ? capture_take(frames) : frames;
   for (uint8_t ch = 0; ch < NUM_AUDIO_CHANNELS; ch++) {
     ChannelHealth &health = g_health[ch];
     AudioChannelStats &stats = g_stats[ch];
@@ -63,12 +69,14 @@ size_t audio_pipeline_process_block() {
     stats.last_peak = peak;
 
     if (!(AUDIO_DEAD_CHANNEL_SUPPRESS && health.faulty)) {
-      buffer_manager_write_block(ch, g_pcm, frames);
+      if (retain) buffer_manager_write_block(ch, g_pcm, retain);
+      if (frames > retain) buffer_manager_advance_samples(ch, frames - retain);
     } else {
       buffer_manager_skip_samples(ch, frames);
     }
   }
 
+  if (AUDIO_PERIODIC_CAPTURE && retain) capture_commit(retain);
   return frames;
 }
 

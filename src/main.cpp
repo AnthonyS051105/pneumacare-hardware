@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <atomic>
 #include <config.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
@@ -22,21 +23,22 @@
 //
 // Core 0: task "acquisition" (prioritas lebih tinggi, timing sensitif)
 //   - I2S 4-channel -> filter -> PCM int16 -> ring buffer (audio_pipeline)
-//   - PPG MAX30102 -> g_ppg_queue (FreeRTOS queue ke Core 1)
+// Core 0: task "ppg" prioritas lebih rendah, satu pemilik Wire/MAX30102
+//   - PPG -> g_ppg_queue; I2C retry tidak memblokir task I2S
 //   - Sensor gagal: dicoba init ulang berkala, TANPA menghentikan sensor lain
 //
-// Core 1: task "network"
+// Core 1: task "network" (Wi-Fi/MQTT/PPG) dan task "audio_transport" (WebSocket)
 //   WIFI_CONNECTING -> NTP_SYNC (best-effort, ber-timeout) -> STREAMING
 //   STREAMING -> (WiFi putus) -> WIFI_CONNECTING; WS/MQTT reconnect sendiri
 //   dengan exponential backoff tanpa pernah menyerah permanen.
 //
-// Keandalan (NFR-HW-001): task watchdog untuk kedua task, restart otomatis
+// Keandalan (NFR-HW-001): task watchdog untuk setiap task, restart otomatis
 // bila WiFi hilang terlalu lama atau heap kritis, alasan reset dicetak saat boot.
 // =====================================================================
 
 #define AUDIO_REINIT_INTERVAL_MS 5000
 #define AUDIO_MAX_CONSECUTIVE_READ_FAILURES 10
-#define PPG_POLL_INTERVAL_WITHOUT_AUDIO_MS 10
+#define AUDIO_RETRY_POLL_INTERVAL_MS 10
 
 enum NetworkState {
   NET_WIFI_CONNECTING,
@@ -47,22 +49,28 @@ enum NetworkState {
 static const char *const kNetworkStateNames[] = {"WIFI_CONNECTING", "NTP_SYNC", "STREAMING"};
 
 static QueueHandle_t g_ppg_queue = NULL;
+static std::atomic<bool> g_network_ready{false};
+static std::atomic<bool> g_streaming_enabled{false};
 
 // Ditulis Core 0, dibaca Core 1 (akses 32-bit di ESP32 atomik).
 static volatile bool g_audio_ok = false;
 static volatile uint32_t g_ppg_queue_drops = 0;
+static volatile uint32_t g_ppg_poll_max_us = 0;
 
 // ---------------------------------------------------------------------
 // Task acquisition (Core 0)
 // ---------------------------------------------------------------------
 
 static void poll_ppg() {
+  uint32_t started=micros();
   PpgSample samples[PPG_FIFO_DEPTH];
   size_t n = ppg_acquisition_read(samples, PPG_FIFO_DEPTH);
   for (size_t i = 0; i < n; i++) {
     // Jangan pernah memblokir akuisisi demi antrean PPG yang penuh (SDD §4).
     if (xQueueSend(g_ppg_queue, &samples[i], 0) != pdTRUE) g_ppg_queue_drops++;
   }
+  uint32_t elapsed=micros()-started;
+  if(elapsed>g_ppg_poll_max_us)g_ppg_poll_max_us=elapsed;
 }
 
 static void task_acquisition(void *) {
@@ -71,7 +79,6 @@ static void task_acquisition(void *) {
   // SENSOR_INIT (SDD §3): kegagalan dicatat & dicoba lagi, bukan berhenti.
   g_audio_ok = audio_pipeline_init();
   if (!g_audio_ok) Serial.println("[acquisition] Init I2S gagal — dicoba ulang berkala.");
-  if (!ppg_acquisition_init()) Serial.println("[acquisition] Init PPG gagal — dicoba ulang berkala.");
 
   uint32_t last_audio_init_ms = millis();
   uint32_t consecutive_failures = 0;
@@ -87,12 +94,11 @@ static void task_acquisition(void *) {
         g_audio_ok = audio_pipeline_init();
         consecutive_failures = 0;
       }
-      poll_ppg();
-      vTaskDelay(pdMS_TO_TICKS(PPG_POLL_INTERVAL_WITHOUT_AUDIO_MS));
+      vTaskDelay(pdMS_TO_TICKS(AUDIO_RETRY_POLL_INTERVAL_MS));
       continue;
     }
 
-    // Blocking ~16 ms (dipacu DMA I2S) — sekaligus mem-pace polling PPG.
+    // Blocking ~16 ms, dipacu DMA I2S; akses PPG dimiliki task terpisah.
     if (audio_pipeline_process_block() == 0) {
       if (++consecutive_failures >= AUDIO_MAX_CONSECUTIVE_READ_FAILURES) {
         Serial.println("[acquisition] I2S berhenti merespons — init ulang.");
@@ -103,7 +109,21 @@ static void task_acquisition(void *) {
       consecutive_failures = 0;
     }
 
+  }
+}
+
+// PPG may block inside I2C driver recovery even with a short transaction timeout.
+// Audio has higher priority and never waits for this task; the existing queue is
+// still the only path to MQTT. The sensor automatically retries when power returns.
+static void task_ppg(void *) {
+  esp_task_wdt_add(NULL);
+  if(!ppg_acquisition_init())
+    Serial.println("[ppg] Init gagal — retry di task PPG, akuisisi audio tetap berjalan.");
+  Serial.printf("[ppg] dedicated_task=1 core=%d priority=%u\n",xPortGetCoreID(),TASK_PPG_PRIORITY);
+  for(;;) {
+    esp_task_wdt_reset();
     poll_ppg();
+    vTaskDelay(pdMS_TO_TICKS(TASK_PPG_LOOP_DELAY_MS));
   }
 }
 
@@ -151,12 +171,17 @@ static void print_status(NetworkState state, int battery_pct) {
                 mqtt_client_is_connected(), (unsigned)ESP.getFreeHeap(),
                 (unsigned)ESP.getMinFreeHeap(), battery_pct);
 
+  Serial.printf("[memory] heap_total=%u free=%u largest=%u psram_total=%u psram_free=%u binary=%d chunk_ms=%u\n",
+                (unsigned)ESP.getHeapSize(), (unsigned)ESP.getFreeHeap(),
+                (unsigned)ESP.getMaxAllocHeap(), (unsigned)ESP.getPsramSize(),
+                (unsigned)ESP.getFreePsram(), AUDIO_WS_BINARY, (unsigned)CHUNK_DURATION_MS);
   Serial.printf("[status] audio ok=%d dma_ovf=%lu i2s_err=%lu chunks_sent=%lu ws_fail=%lu\n",
                 g_audio_ok, (unsigned long)audio_acquisition_get_dma_overflows(),
                 (unsigned long)audio_acquisition_get_read_errors(), (unsigned long)ws.chunks_sent,
                 (unsigned long)ws.send_failures);
-  Serial.printf("[status] ws build_max_us=%lu send_max_us=%lu (since boot)\n",
-                (unsigned long)ws.max_build_us, (unsigned long)ws.max_send_us);
+  Serial.printf("[status] ws build_max_us=%lu send_max_us=%lu pump_max_us=%lu loop_max_us=%lu (since boot)\n",
+                (unsigned long)ws.max_build_us, (unsigned long)ws.max_send_us,
+                (unsigned long)ws.max_pump_us, (unsigned long)ws.max_loop_us);
   for (uint8_t ch = 0; ch < NUM_AUDIO_CHANNELS; ch++) {
     AudioChannelStats s;
     audio_pipeline_get_stats(ch, &s);
@@ -174,12 +199,12 @@ static void print_status(NetworkState state, int battery_pct) {
   last_print_ms = now;
 
   Serial.printf("[status] ppg ready=%d rate=%.1fHz fifo_ovf=%lu i2c_err=%lu queue_drop=%lu "
-                "batches=%lu mqtt_fail=%lu mqtt_drop=%lu\n",
+                "batches=%lu mqtt_fail=%lu mqtt_drop=%lu poll_max_us=%lu\n",
                 ppg_acquisition_is_ready(), ppg_rate,
                 (unsigned long)ppg_acquisition_get_fifo_overflows(),
                 (unsigned long)ppg_acquisition_get_i2c_errors(), (unsigned long)g_ppg_queue_drops,
                 (unsigned long)mqtt.batches_published, (unsigned long)mqtt.publish_failures,
-                (unsigned long)mqtt.samples_dropped);
+                (unsigned long)mqtt.samples_dropped, (unsigned long)g_ppg_poll_max_us);
 }
 
 static void check_recovery() {
@@ -200,13 +225,9 @@ static void check_recovery() {
 
 static void task_network(void *) {
   network_manager_init();
-  if (!ws_client_init(DEVICE_ID)) {
-    Serial.println("[FATAL] Buffer websocket tidak bisa dialokasikan — restart.");
-    Serial.flush();
-    ESP.restart();
-  }
   mqtt_client_init(DEVICE_ID);
   battery_monitor_init();
+  g_network_ready.store(true);
   esp_task_wdt_add(NULL);
 
   NetworkState state = NET_WIFI_CONNECTING;
@@ -254,7 +275,7 @@ static void task_network(void *) {
 
     bool streaming = (state == NET_STREAMING);
 
-    ws_client_tick(streaming);
+    g_streaming_enabled.store(streaming);
 
     // Drain sample PPG dari Core 0. Di luar STREAMING, sample dibuang supaya
     // antrean tidak penuh dan batch pertama nanti berisi data segar.
@@ -284,6 +305,26 @@ static void task_network(void *) {
   }
 }
 
+// Audio client has exactly one owner. It never touches the MQTT client/PPG queue.
+static void task_audio_transport(void *) {
+  esp_task_wdt_add(NULL);
+  while (!g_network_ready.load()) {
+    esp_task_wdt_reset();
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  if (!ws_client_init(DEVICE_ID)) {
+    Serial.println("[FATAL] Audio transport buffer allocation failed — restart.");
+    Serial.flush();
+    ESP.restart();
+  }
+  Serial.printf("[transport] dedicated_task=1 core=%d\n", xPortGetCoreID());
+  for (;;) {
+    esp_task_wdt_reset();
+    ws_client_tick(g_streaming_enabled.load());
+    vTaskDelay(pdMS_TO_TICKS(TASK_AUDIO_TRANSPORT_LOOP_DELAY_MS));
+  }
+}
+
 // ---------------------------------------------------------------------
 
 static const char *reset_reason_name(esp_reset_reason_t reason) {
@@ -307,6 +348,7 @@ void setup() {
   Serial.setTxBufferSize(4096);
   Serial.begin(115200);
   delay(500);
+  Serial.printf("[memory] psram_probe=%d\n", psramInit());
 
   status_led_init();
 
@@ -331,13 +373,27 @@ void setup() {
   }
   Serial.printf("heap bebas setelah alokasi buffer: %u byte\n", (unsigned)ESP.getFreeHeap());
 
-  xTaskCreatePinnedToCore(task_acquisition, "acquisition", TASK_ACQUISITION_STACK_SIZE, NULL,
-                          TASK_ACQUISITION_PRIORITY, NULL, TASK_ACQUISITION_CORE);
-  xTaskCreatePinnedToCore(task_network, "network", TASK_NETWORK_STACK_SIZE, NULL,
-                          TASK_NETWORK_PRIORITY, NULL, TASK_NETWORK_CORE);
+  BaseType_t acquisition_created = xTaskCreatePinnedToCore(task_acquisition, "acquisition",
+      TASK_ACQUISITION_STACK_SIZE, NULL, TASK_ACQUISITION_PRIORITY, NULL, TASK_ACQUISITION_CORE);
+  BaseType_t ppg_created = xTaskCreatePinnedToCore(task_ppg, "ppg",
+      TASK_PPG_STACK_SIZE, NULL, TASK_PPG_PRIORITY, NULL, TASK_PPG_CORE);
+  BaseType_t network_created = xTaskCreatePinnedToCore(task_network, "network",
+      TASK_NETWORK_STACK_SIZE, NULL, TASK_NETWORK_PRIORITY, NULL, TASK_NETWORK_CORE);
+  if (acquisition_created != pdPASS || ppg_created != pdPASS || network_created != pdPASS) {
+    Serial.println("[FATAL] Acquisition/PPG/network task allocation failed — restart.");
+    Serial.flush();
+    ESP.restart();
+  }
+  if (xTaskCreatePinnedToCore(task_audio_transport, "audio_transport",
+      TASK_AUDIO_TRANSPORT_STACK_SIZE, NULL, TASK_AUDIO_TRANSPORT_PRIORITY, NULL,
+      TASK_AUDIO_TRANSPORT_CORE) != pdPASS) {
+    Serial.println("[FATAL] Audio transport task allocation failed — restart.");
+    Serial.flush();
+    ESP.restart();
+  }
 }
 
 void loop() {
-  // loopTask Arduino tidak dipakai — seluruh logic ada di 2 task di atas.
+  // loopTask Arduino tidak dipakai — seluruh logic ada di 4 task di atas.
   vTaskDelete(NULL);
 }

@@ -63,7 +63,7 @@
 #define NUM_AUDIO_CHANNELS 4
 
 // Sample rate akuisisi mentah (native INMP441, didukung 7.8–50 kHz per datasheet).
-// Backend resample sendiri ke 22000 Hz (INTEGRATION_CONTRACT.md §4.1).
+// AST backend uses 16000 Hz (INTEGRATION_CONTRACT.md §4.1).
 #define AUDIO_SAMPLE_RATE_HZ 16000
 
 // Sumber tiap channel: unit I2S (0 = I2S0/SD_1, 1 = I2S1/SD_2) dan slot di
@@ -121,14 +121,19 @@ static const uint8_t AUDIO_CHANNEL_ID_MAP[4] = {
 // Ukuran chunk per pesan websocket (FR-HW-011). 250 ms: 4000 sample x 2 byte =
 // 8 KB PCM (~11 KB JSON+base64) per pesan — buffer kirim kecil & kontigu.
 // Backend menyusun ulang jadi segmen 5 detik dari akumulasi chunk_duration_ms.
+#ifndef CHUNK_DURATION_MS
 #define CHUNK_DURATION_MS 250
+#endif
 #define CHUNK_SAMPLE_COUNT (AUDIO_SAMPLE_RATE_HZ * CHUNK_DURATION_MS / 1000)
 
 // Ring buffer per channel (int16, dialokasikan di heap saat init) = 2 chunk
 // (500 ms) -> 4 x 16 KB = 64 KB total. Menyerap jitter jaringan sesaat; bila
 // backlog melebihi ini, sample TERLAMA di-drop (SDD §4).
-#define RING_BUFFER_CHUNKS 2
-#define RING_BUFFER_CAPACITY (CHUNK_SAMPLE_COUNT * RING_BUFFER_CHUNKS)
+#ifndef AUDIO_RING_BUFFER_MS
+#define AUDIO_RING_BUFFER_MS 500
+#endif
+#define RING_BUFFER_CHUNKS (AUDIO_RING_BUFFER_MS / CHUNK_DURATION_MS)
+#define RING_BUFFER_CAPACITY (AUDIO_SAMPLE_RATE_HZ * AUDIO_RING_BUFFER_MS / 1000)
 
 // Deteksi channel mati/macet: bila puncak-ke-puncak sample 24-bit mentah dalam
 // satu jendela < ambang, channel ditandai FAULT dan chunk-nya TIDAK dikirim —
@@ -168,10 +173,11 @@ static const uint8_t AUDIO_CHANNEL_ID_MAP[4] = {
 
 // Batch publish MQTT: 100 sample = ~1 detik pada 100 Hz.
 #define PPG_BATCH_SIZE 100
-// Antrean sample dari Core 0 ke Core 1 — 5 detik headroom (4 KB), tetap
-// terbatas. Harus melebihi operasi blocking terlama task network (connect
-// MQTT: TCP 3 s + CONNACK) supaya PPG tidak terbuang saat reconnect.
-#define PPG_SAMPLE_QUEUE_LENGTH (PPG_SAMPLE_RATE_HZ * 5)
+// Bounded PPG jitter budget: observed audio send stall reached 6.5 s.
+// 10 s = 1000 pairs (~8 KB), +4 KB versus the previous five-second queue.
+// Does not change the 100 Hz acquisition or one-second MQTT batch cadence.
+#define PPG_QUEUE_HEADROOM_SECONDS 10
+#define PPG_SAMPLE_QUEUE_LENGTH (PPG_SAMPLE_RATE_HZ * PPG_QUEUE_HEADROOM_SECONDS)
 
 // =====================================================================
 // Network — FR-HW-020..025, INTEGRATION_CONTRACT.md §2-§3, §6
@@ -238,10 +244,21 @@ static const uint8_t AUDIO_CHANNEL_ID_MAP[4] = {
 #define TASK_ACQUISITION_PRIORITY 5
 #define TASK_ACQUISITION_STACK_SIZE 6144
 
+// I2C recovery can outlast the audio DMA budget; keep it out of the I2S task.
+#define TASK_PPG_CORE 0
+#define TASK_PPG_PRIORITY 3
+#define TASK_PPG_STACK_SIZE 4096
+#define TASK_PPG_LOOP_DELAY_MS 5
+
 #define TASK_NETWORK_CORE 1
 #define TASK_NETWORK_PRIORITY 2
 #define TASK_NETWORK_STACK_SIZE 10240
 #define TASK_NETWORK_LOOP_DELAY_MS 5
+// Audio socket writes may block; MQTT remains owned by task_network.
+#define TASK_AUDIO_TRANSPORT_CORE 1
+#define TASK_AUDIO_TRANSPORT_PRIORITY 2
+#define TASK_AUDIO_TRANSPORT_STACK_SIZE 8192
+#define TASK_AUDIO_TRANSPORT_LOOP_DELAY_MS 5
 
 // =====================================================================
 // Keandalan & diagnostik — NFR-HW-001, FR-HW-031
@@ -257,3 +274,28 @@ static const uint8_t AUDIO_CHANNEL_ID_MAP[4] = {
 #define HEAP_CRITICAL_RESTART_BYTES 16384
 
 #define STATUS_LOG_INTERVAL_MS 5000
+
+// Binary PCM transport; override with -DAUDIO_WS_BINARY=0 for JSON A/B tests.
+#ifndef AUDIO_WS_BINARY
+#define AUDIO_WS_BINARY 1
+#endif
+
+// Short-window transport experiment; not a clinically validated observation interval.
+#ifndef AUDIO_PERIODIC_CAPTURE
+#define AUDIO_PERIODIC_CAPTURE 0
+#endif
+#define AUDIO_CAPTURE_DURATION_MS 2000
+#define AUDIO_CAPTURE_INTERVAL_MS 20000
+#define AUDIO_CAPTURE_TIMEOUT_MS 30000
+// Per-frame socket progress budget; never block the capture scheduler on TCP.
+#define AUDIO_CAPTURE_FRAME_TIMEOUT_MS 500
+#define AUDIO_CAPTURE_SAMPLE_COUNT (AUDIO_SAMPLE_RATE_HZ * AUDIO_CAPTURE_DURATION_MS / 1000)
+static_assert(RING_BUFFER_CAPACITY >= CHUNK_SAMPLE_COUNT,
+              "Ring must hold at least one transport chunk per channel");
+static_assert(!AUDIO_PERIODIC_CAPTURE || AUDIO_CAPTURE_DURATION_MS % CHUNK_DURATION_MS == 0,
+              "Recording must contain whole transport chunks");
+
+// Diagnostic injection only, enabled solely by the stall-test environment.
+#ifndef AUDIO_TRANSPORT_TEST_STALL_MS
+#define AUDIO_TRANSPORT_TEST_STALL_MS 0
+#endif

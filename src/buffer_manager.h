@@ -46,3 +46,6 @@ void buffer_manager_clear(uint8_t channel_index);
 
 // Total sample yang di-drop sejak boot (indikasi network lebih lambat dari akuisisi).
 uint32_t buffer_manager_get_drop_count(uint8_t channel_index);
+
+// Planned capture pause: advance the physical sample timeline, retain queued PCM.
+void buffer_manager_advance_samples(uint8_t channel_index, size_t n);

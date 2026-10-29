@@ -6,6 +6,7 @@
 #include <config.h>
 
 #include "battery_curve.h"
+#include "audio_transport_policy.h"
 #include "reconnect_manager.h"
 
 void setUp() {}
@@ -72,8 +73,27 @@ void test_battery_curve_interpolates_and_is_monotonic() {
   }
 }
 
+
+void test_websocket_control_never_interleaves_partial_audio_frame() {
+  TEST_ASSERT_FALSE(ws_may_poll(true,true,CAPTURE_RECORDING));
+  TEST_ASSERT_FALSE(ws_may_poll(true,true,CAPTURE_READY));
+  TEST_ASSERT_FALSE(ws_may_poll(true,true,CAPTURE_WAIT_ACK));
+}
+void test_connected_recording_does_not_enter_blocking_control_reader() {
+  TEST_ASSERT_FALSE(ws_may_poll(false,true,CAPTURE_RECORDING));
+  TEST_ASSERT_FALSE(ws_may_poll(false,true,CAPTURE_READY));
+}
+void test_poll_resumes_for_ack_keepalive_and_reconnection() {
+  TEST_ASSERT_TRUE(ws_may_poll(false,true,CAPTURE_WAIT_ACK));
+  TEST_ASSERT_TRUE(ws_may_poll(false,true,CAPTURE_IDLE));
+  TEST_ASSERT_TRUE(ws_may_poll(false,false,CAPTURE_RECORDING));
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_websocket_control_never_interleaves_partial_audio_frame);
+  RUN_TEST(test_connected_recording_does_not_enter_blocking_control_reader);
+  RUN_TEST(test_poll_resumes_for_ack_keepalive_and_reconnection);
   RUN_TEST(test_backoff_sequence_doubles_until_cap);
   RUN_TEST(test_backoff_waits_for_delay);
   RUN_TEST(test_backoff_reset_after_success);

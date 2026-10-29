@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 // Penyusun pesan websocket audio — INTEGRATION_CONTRACT.md §2.3 (✅ FINAL:
-// JSON teks + "pcm_base64", BUKAN binary frame).
+// JSON teks + pcm_base64 legacy, atau PCA1 binary PCM yang backward-compatible).
 //
 // Pesan ditulis langsung ke satu buffer milik pemanggil (tanpa ArduinoJson /
 // String perantara) — versi lama menyalin ~11 KB data hingga 4x per chunk
@@ -21,6 +21,10 @@ struct AudioFrameHeader {
   uint32_t chunk_duration_ms;
   const char *stream_id; // boot identifier; NULL for legacy diagnostic senders
   uint64_t sample_start;
+  uint32_t capture_id;
+  uint32_t capture_duration_ms;
+  uint32_t capture_offset_samples;
+  uint64_t capture_start_ms;
 };
 
 // Ukuran base64 (tanpa terminator) untuk n byte input.
@@ -33,3 +37,8 @@ size_t audio_frame_max_size(size_t n_samples);
 // (tanpa terminator), atau 0 bila out_cap tidak cukup.
 size_t audio_frame_build(char *out, size_t out_cap, const AudioFrameHeader &header,
                          const int16_t *pcm, size_t n_samples);
+
+// PCA1 + uint16 LE JSON header length + JSON metadata (no pcm_base64) + PCM LE.
+size_t audio_frame_binary_max_size(size_t n_samples);
+size_t audio_frame_build_binary(uint8_t *out, size_t out_cap, const AudioFrameHeader &header,
+                               const int16_t *pcm, size_t n_samples);

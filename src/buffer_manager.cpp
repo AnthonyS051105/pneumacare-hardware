@@ -13,6 +13,7 @@ struct AudioRingBuffer {
   size_t tail;  // index sample tertua (baca berikutnya)
   size_t count; // jumlah sample valid saat ini
   uint32_t drop_count;
+  uint64_t first_sample;
   uint64_t samples_written; // timeline per channel; tidak direset saat clear
   platform_lock_t lock;
 };
@@ -48,6 +49,7 @@ bool buffer_manager_init(uint8_t num_channels, size_t capacity) {
     buf.count = 0;
     buf.drop_count = 0;
     buf.samples_written = 0;
+    buf.first_sample = 0;
     buf.lock = PLATFORM_LOCK_INITIALIZER;
   }
 
@@ -76,14 +78,17 @@ void buffer_manager_write_block(uint8_t channel_index, const int16_t *samples, s
   platform_lock_enter(&buf.lock);
 
   buf.samples_written += n + skipped_input;
+  if (buf.count == 0) buf.first_sample = buf.samples_written - n;
   size_t free_space = g_capacity - buf.count;
   if (n > free_space) {
     // Drop sample TERLAMA (SDD §4) untuk memberi ruang blok baru.
     size_t to_drop = n - free_space;
     buf.tail = (buf.tail + to_drop) % g_capacity;
     buf.count -= to_drop;
+    buf.first_sample += to_drop;
     buf.drop_count += (uint32_t)to_drop;
   }
+  if (buf.count == 0) buf.first_sample = buf.samples_written - n;
   buf.drop_count += (uint32_t)skipped_input;
 
   // Salin dalam maksimal 2 segmen (sebelum & sesudah wrap-around).
@@ -117,7 +122,7 @@ size_t buffer_manager_read_chunk(uint8_t channel_index, int16_t *out_buf, size_t
 
   platform_lock_enter(&buf.lock);
 
-  if (sample_start != NULL) *sample_start = buf.samples_written - buf.count;
+  if (sample_start != NULL) *sample_start = buf.first_sample;
   size_t to_read = (buf.count < max_samples) ? buf.count : max_samples;
   size_t first = g_capacity - buf.tail;
   if (first > to_read) first = to_read;
@@ -127,6 +132,7 @@ size_t buffer_manager_read_chunk(uint8_t channel_index, int16_t *out_buf, size_t
   }
   buf.tail = (buf.tail + to_read) % g_capacity;
   buf.count -= to_read;
+  buf.first_sample += to_read;
 
   platform_lock_exit(&buf.lock);
 
@@ -161,4 +167,10 @@ void buffer_manager_skip_samples(uint8_t channel_index, size_t n) {
   buf.samples_written += n;
   buf.head = buf.tail = buf.count = 0;
   platform_lock_exit(&buf.lock);
+}
+
+void buffer_manager_advance_samples(uint8_t channel_index, size_t n) {
+  if(channel_index>=g_num_channels)return;
+  AudioRingBuffer &buf=g_buffers[channel_index];
+  platform_lock_enter(&buf.lock);buf.samples_written+=n;platform_lock_exit(&buf.lock);
 }

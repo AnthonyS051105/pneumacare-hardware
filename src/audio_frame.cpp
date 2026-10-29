@@ -3,7 +3,7 @@
 #include <string.h>
 
 // Ruang untuk semua field JSON selain isi base64 (nama field, device_id, angka).
-static const size_t kJsonOverheadBytes = 384;
+static const size_t kJsonOverheadBytes = 512;
 
 static const char kBase64Alphabet[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -105,6 +105,12 @@ size_t audio_frame_build(char *out, size_t out_cap, const AudioFrameHeader &head
     put_str(w, "\",\"sample_start\":");
     put_u64(w, header.sample_start);
   }
+  if (header.capture_id) {
+    put_str(w, ",\"capture_id\":");put_u64(w, header.capture_id);
+    put_str(w, ",\"capture_duration_ms\":");put_u64(w, header.capture_duration_ms);
+    put_str(w, ",\"capture_offset_samples\":");put_u64(w, header.capture_offset_samples);
+    put_str(w, ",\"capture_start_ms\":");put_u64(w, header.capture_start_ms);
+  }
   put_str(w, ",\"pcm_base64\":\"");
   put_pcm_base64(w, pcm, n_samples);
   put_str(w, "\"}");
@@ -115,4 +121,32 @@ size_t audio_frame_build(char *out, size_t out_cap, const AudioFrameHeader &head
   }
   out[w.len] = '\0';
   return w.len;
+}
+
+size_t audio_frame_binary_max_size(size_t n_samples) {
+  return 6 + audio_frame_max_size(0) + n_samples * 2;
+}
+
+size_t audio_frame_build_binary(uint8_t *out, size_t out_cap, const AudioFrameHeader &header,
+                               const int16_t *pcm, size_t n_samples) {
+  if (out == NULL || (pcm == NULL && n_samples) || out_cap < 6 ||
+      n_samples > (out_cap - 6) / 2) return 0;
+  // Reuse the canonical JSON metadata writer, without encoding any samples.
+  size_t json_len = audio_frame_build((char *)out + 6, out_cap - 6, header, NULL, 0);
+  const char suffix[] = ",\"pcm_base64\":\"\"}";
+  size_t suffix_len = sizeof(suffix) - 1;
+  if (json_len < suffix_len ||
+      memcmp(out + 6 + json_len - suffix_len, suffix, suffix_len) != 0) return 0;
+  size_t header_len = json_len - suffix_len + 1;
+  if (header_len > 1024 || 6 + header_len + n_samples * 2 > out_cap) return 0;
+  out[6 + header_len - 1] = '}';
+  memcpy(out, "PCA1", 4);
+  out[4] = (uint8_t)header_len;
+  out[5] = (uint8_t)(header_len >> 8);
+  for (size_t i = 0; i < n_samples; i++) {
+    uint16_t v = (uint16_t)pcm[i];
+    out[6 + header_len + i * 2] = (uint8_t)v;
+    out[6 + header_len + i * 2 + 1] = (uint8_t)(v >> 8);
+  }
+  return 6 + header_len + n_samples * 2;
 }
