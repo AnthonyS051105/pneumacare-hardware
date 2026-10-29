@@ -23,10 +23,10 @@
 // pasien demo dan tidak memicu klasifikasi/alert palsu di dashboard.
 #define DIAG_DEVICE_ID "pneumacare-0000"
 
-#define BACKEND_WS_HOST "172.30.2.149"
+#define BACKEND_WS_HOST "10.56.148.149"
 #define BACKEND_WS_PORT 5000
 
-#define MQTT_BROKER_HOST "172.30.2.149"
+#define MQTT_BROKER_HOST "10.56.148.149"
 #define MQTT_BROKER_PORT 1883
 
 // =====================================================================
