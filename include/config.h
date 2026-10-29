@@ -62,6 +62,19 @@
 // AUDIO_DEAD_CHANNEL_*), jadi nilai 4 tetap aman dipakai walau mic belum lengkap.
 #define NUM_AUDIO_CHANNELS 4
 
+// Explicit, reversible transport-demo profile. Normal firmware uses all physical mics.
+#ifndef AUDIO_SIMULATED_CHANNEL_ID
+#define AUDIO_SIMULATED_CHANNEL_ID 0
+#endif
+#ifndef AUDIO_SIMULATION_SOURCE_CHANNEL_ID
+#define AUDIO_SIMULATION_SOURCE_CHANNEL_ID 0
+#endif
+static_assert(AUDIO_SIMULATED_CHANNEL_ID == 0 ||
+              (AUDIO_SIMULATED_CHANNEL_ID >= 1 && AUDIO_SIMULATED_CHANNEL_ID <= 4 &&
+               AUDIO_SIMULATION_SOURCE_CHANNEL_ID >= 1 && AUDIO_SIMULATION_SOURCE_CHANNEL_ID <= 4 &&
+               AUDIO_SIMULATED_CHANNEL_ID != AUDIO_SIMULATION_SOURCE_CHANNEL_ID),
+              "Simulation must reference a different measured channel");
+
 // Sample rate akuisisi mentah (native INMP441, didukung 7.8–50 kHz per datasheet).
 // AST backend uses 16000 Hz (INTEGRATION_CONTRACT.md §4.1).
 #define AUDIO_SAMPLE_RATE_HZ 16000

@@ -247,6 +247,8 @@ static bool send_ready_chunks(uint8_t channel_index) {
         g_stream_id,
         sample_start,
     };
+    if (header.channel_id == AUDIO_SIMULATED_CHANNEL_ID)
+      header.simulated_source_channel_id = AUDIO_SIMULATION_SOURCE_CHANNEL_ID;
     if (AUDIO_PERIODIC_CAPTURE) {
       auto capture = capture_snapshot();
       header.capture_id = capture.id;

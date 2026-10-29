@@ -111,6 +111,10 @@ size_t audio_frame_build(char *out, size_t out_cap, const AudioFrameHeader &head
     put_str(w, ",\"capture_offset_samples\":");put_u64(w, header.capture_offset_samples);
     put_str(w, ",\"capture_start_ms\":");put_u64(w, header.capture_start_ms);
   }
+  if (header.simulated_source_channel_id) {
+    put_str(w, ",\"data_origin\":\"simulated\",\"source_channel_id\":");
+    put_u64(w, header.simulated_source_channel_id);
+  }
   put_str(w, ",\"pcm_base64\":\"");
   put_pcm_base64(w, pcm, n_samples);
   put_str(w, "\"}");

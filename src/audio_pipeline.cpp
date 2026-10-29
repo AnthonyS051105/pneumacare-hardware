@@ -5,6 +5,7 @@
 
 #include "audio_acquisition.h"
 #include "audio_pcm.h"
+#include "audio_route.h"
 #include "buffer_manager.h"
 #include "channel_health.h"
 #include "capture_scheduler.h"
@@ -47,7 +48,8 @@ size_t audio_pipeline_process_block() {
                     health.faulty ? "TIDAK ADA SINYAL — mic lepas/rusak, chunk tidak dikirim"
                                   : "sinyal kembali normal",
                     (long)health.last_p2p);
-      if (health.faulty) buffer_manager_clear(ch);
+      if (health.faulty && AUDIO_CHANNEL_ID_MAP[ch] != AUDIO_SIMULATED_CHANNEL_ID)
+        buffer_manager_clear(ch);
     }
 
     for (size_t i = 0; i < frames; i++) {
@@ -68,11 +70,10 @@ size_t audio_pipeline_process_block() {
     stats.sample_count += frames;
     stats.last_peak = peak;
 
-    if (!(AUDIO_DEAD_CHANNEL_SUPPRESS && health.faulty)) {
-      if (retain) buffer_manager_write_block(ch, g_pcm, retain);
-      if (frames > retain) buffer_manager_advance_samples(ch, frames - retain);
-    } else {
-      buffer_manager_skip_samples(ch, frames);
+    if (audio_routed_source(ch, AUDIO_SIMULATED_CHANNEL_ID,
+                            AUDIO_SIMULATION_SOURCE_CHANNEL_ID) == ch) {
+      audio_route_write(ch, AUDIO_SIMULATED_CHANNEL_ID, AUDIO_SIMULATION_SOURCE_CHANNEL_ID,
+                        g_pcm, frames, retain, !(AUDIO_DEAD_CHANNEL_SUPPRESS && health.faulty));
     }
   }
 

@@ -232,8 +232,28 @@ static void test_binary_pcm_header_and_signed_roundtrip() {
 }
 
 
+static void test_simulation_provenance_roundtrips_both_transports() {
+  AudioFrameHeader h = make_header();
+  h.simulated_source_channel_id = 4;
+  int16_t pcm[4] = {1,-2,3,-4};
+  char out[1024];
+  size_t len = audio_frame_build(out,sizeof(out),h,pcm,4);
+  TEST_ASSERT_GREATER_THAN(0,len);
+  JsonDocument doc;
+  TEST_ASSERT_EQUAL(DeserializationError::Ok,deserializeJson(doc,out).code());
+  TEST_ASSERT_EQUAL_STRING("simulated",doc["data_origin"].as<const char*>());
+  TEST_ASSERT_EQUAL_INT(4,doc["source_channel_id"].as<int>());
+  len = audio_frame_build_binary((uint8_t*)out,sizeof(out),h,pcm,4);
+  size_t n = (uint8_t)out[4] | ((size_t)(uint8_t)out[5]<<8);
+  TEST_ASSERT_GREATER_THAN(6,len);
+  TEST_ASSERT_EQUAL(DeserializationError::Ok,deserializeJson(doc,out+6,n).code());
+  TEST_ASSERT_EQUAL_STRING("simulated",doc["data_origin"].as<const char*>());
+  TEST_ASSERT_EQUAL_INT(4,doc["source_channel_id"].as<int>());
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_simulation_provenance_roundtrips_both_transports);
   RUN_TEST(test_binary_pcm_header_and_signed_roundtrip);
   RUN_TEST(test_audio_continuity_metadata_roundtrip_and_size);
   RUN_TEST(test_audio_frame_has_all_required_fields);

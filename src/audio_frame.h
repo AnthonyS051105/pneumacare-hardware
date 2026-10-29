@@ -25,6 +25,7 @@ struct AudioFrameHeader {
   uint32_t capture_duration_ms;
   uint32_t capture_offset_samples;
   uint64_t capture_start_ms;
+  uint8_t simulated_source_channel_id; // 0=physical; otherwise explicit duplicate source
 };
 
 // Ukuran base64 (tanpa terminator) untuk n byte input.

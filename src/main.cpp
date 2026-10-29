@@ -175,6 +175,9 @@ static void print_status(NetworkState state, int battery_pct) {
                 (unsigned)ESP.getHeapSize(), (unsigned)ESP.getFreeHeap(),
                 (unsigned)ESP.getMaxAllocHeap(), (unsigned)ESP.getPsramSize(),
                 (unsigned)ESP.getFreePsram(), AUDIO_WS_BINARY, (unsigned)CHUNK_DURATION_MS);
+  if(AUDIO_SIMULATED_CHANNEL_ID)
+    Serial.printf("[simulation] channel=%u source_channel=%u data_origin=simulated physical_mics=3 logical_channels=4\n",
+                  AUDIO_SIMULATED_CHANNEL_ID, AUDIO_SIMULATION_SOURCE_CHANNEL_ID);
   Serial.printf("[status] audio ok=%d dma_ovf=%lu i2s_err=%lu chunks_sent=%lu ws_fail=%lu\n",
                 g_audio_ok, (unsigned long)audio_acquisition_get_dma_overflows(),
                 (unsigned long)audio_acquisition_get_read_errors(), (unsigned long)ws.chunks_sent,
