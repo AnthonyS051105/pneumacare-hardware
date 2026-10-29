@@ -151,6 +151,7 @@ bool ppg_acquisition_init() {
 
   if (!g_wire_started) {
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, PPG_I2C_CLOCK_HZ);
+    Wire.setTimeOut(PPG_I2C_TIMEOUT_MS);
     g_wire_started = true;
   }
 

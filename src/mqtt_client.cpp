@@ -106,7 +106,8 @@ void mqtt_client_push_ppg_sample(uint32_t red_sample, uint32_t ir_sample) {
   if (g_batch_count >= PPG_BATCH_SIZE) flush_batch();
 
   if (g_batch_count == 0) {
-    // Perkiraan waktu tangkap sample pertama batch (latensi antrean ~ms).
+    // Batch formation time in the network task, not a measured acquisition time.
+    // Long queue/socket stalls can add latency; do not infer clinical freshness.
     g_batch_first_sample_ms = network_manager_get_epoch_ms();
   }
   g_batch_red[g_batch_count] = red_sample;

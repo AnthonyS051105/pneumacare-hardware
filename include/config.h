@@ -144,6 +144,9 @@ static const uint8_t AUDIO_CHANNEL_ID_MAP[4] = {
 
 #define PPG_I2C_ADDRESS 0x57
 #define PPG_I2C_CLOCK_HZ 400000
+// 126-byte FIFO transfer is ~2.9 ms at 400 kHz. Bound missing/stuck-sensor
+// waits so periodic re-init does not hold the shared acquisition task for 50 ms.
+#define PPG_I2C_TIMEOUT_MS 10
 
 // Sample rate internal 400 SPS dirata-rata 4 -> output FIFO 100 Hz.
 // ⚠️ 100 Hz masih nilai contoh kontrak §3.3 (belum divalidasi tim).
