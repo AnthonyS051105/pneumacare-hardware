@@ -10,3 +10,16 @@ include/secrets.h
 # file khusus lokal
 /docs/
 *.local.*
+
+# Internal Markdown belongs in docs/ locally; README.md remains publishable.
+*.md
+*.MD
+*.markdown
+*.mdx
+!README.md
+
+# Generated logs and local scratch output.
+*.log
+*.tmp
+*.bak
+*~
