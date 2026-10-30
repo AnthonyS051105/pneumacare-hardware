@@ -28,7 +28,9 @@ static bool g_plot_mode = false;
 
 static void flush_fifo() {
   PpgSample tmp[PPG_FIFO_DEPTH];
-  while (ppg_acquisition_read(tmp, PPG_FIFO_DEPTH) > 0) {
+  // Sensor tetap menghasilkan data: batasi pengurasan agar cek tidak macet.
+  for (size_t i = 0; i < PPG_FIFO_DEPTH; i++) {
+    if (ppg_acquisition_read(tmp, PPG_FIFO_DEPTH) == 0) break;
   }
 }
 
@@ -59,7 +61,10 @@ static void run_checks() {
     return;
   }
   uint8_t part = 0, rev = 0;
-  ppg_read_part_info(&part, &rev);
+  if (!ppg_read_part_info(&part, &rev)) {
+    Serial.println("[ppg] FAIL: pembacaan identitas terputus. Periksa kabel I2C.");
+    return;
+  }
   Serial.printf("[ppg] PASS identitas: PART_ID=0x%02X REV=0x%02X\n", part, rev);
 
   // 2. Suhu die
@@ -80,7 +85,7 @@ static void run_checks() {
     ppg_acquisition_read(buf, PPG_FIFO_DEPTH);
     delay(20);
   }
-  float rate = (ppg_acquisition_get_samples_read() - start_count) * 1000.0f / RATE_TEST_DURATION_MS;
+  float rate = (ppg_acquisition_get_samples_read() - start_count) * 1000.0f / (millis() - start_ms);
   float err = fabsf(rate - PPG_SAMPLE_RATE_HZ) / PPG_SAMPLE_RATE_HZ * 100.0f;
   Serial.printf("[ppg] %s laju sample %.1f Hz (target %d, selisih %.1f%%), fifo_overflow=%lu\n",
                 err < 5.0f ? "PASS" : "FAIL", rate, PPG_SAMPLE_RATE_HZ, err,
@@ -90,16 +95,17 @@ static void run_checks() {
   Serial.println("[ppg] Test LED — tempelkan jari/kulit ke sensor sekarang...");
   delay(2000);
   float dark_red, dark_ir, lit_red, lit_ir;
-  ppg_set_led_currents(0, 0);
+  bool dark_configured = ppg_set_led_currents(0, 0);
   delay(LED_SETTLE_MS);
   flush_fifo();
-  bool ok_dark = mean_of_samples(LED_TEST_SAMPLES, &dark_red, &dark_ir);
-  ppg_set_led_currents(PPG_LED_RED_CURRENT, PPG_LED_IR_CURRENT);
+  bool ok_dark = dark_configured && mean_of_samples(LED_TEST_SAMPLES, &dark_red, &dark_ir);
+  // Selalu coba kembalikan arus normal, termasuk bila pengukuran gelap gagal.
+  bool lit_configured = ppg_set_led_currents(PPG_LED_RED_CURRENT, PPG_LED_IR_CURRENT);
   delay(LED_SETTLE_MS);
   flush_fifo();
-  bool ok_lit = mean_of_samples(LED_TEST_SAMPLES, &lit_red, &lit_ir);
+  bool ok_lit = lit_configured && mean_of_samples(LED_TEST_SAMPLES, &lit_red, &lit_ir);
   if (!ok_dark || !ok_lit) {
-    Serial.println("[ppg] FAIL test LED: tidak cukup sample terbaca.");
+    Serial.println("[ppg] FAIL test LED: konfigurasi I2C gagal atau tidak cukup sample terbaca.");
   } else {
     bool red_ok = (lit_red - dark_red) > LED_MIN_DELTA_COUNTS;
     bool ir_ok = (lit_ir - dark_ir) > LED_MIN_DELTA_COUNTS;
@@ -117,6 +123,8 @@ void setup() {
   delay(500);
   Serial.printf("\n=== DIAG: PPG MAX30102 (SDA=%d SCL=%d addr 0x%02X) ===\n", PIN_I2C_SDA,
                 PIN_I2C_SCL, PPG_I2C_ADDRESS);
+  Serial.println("Tempelkan jari dengan stabil pada sensor untuk uji LED dan gelombang.");
+  Serial.println("Data raw untuk uji hardware; program ini tidak menghitung BPM/SpO2.");
   run_checks();
 }
 
@@ -128,7 +136,16 @@ void loop() {
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == 'p') g_plot_mode = !g_plot_mode;
-    if (c == 'r') run_checks();
+    if (c == 'r') {
+      g_plot_mode = false;
+      run_checks();
+      // Sampel sebelum cek ulang tidak boleh tercampur ke jendela berikutnya.
+      window_start = millis();
+      n = 0;
+      red_sum = ir_sum = 0;
+      red_min = ir_min = UINT32_MAX;
+      red_max = ir_max = 0;
+    }
   }
 
   PpgSample buf[PPG_FIFO_DEPTH];
@@ -153,13 +170,15 @@ void loop() {
         // Perfusion index kasar = amplitudo AC / DC. Termasuk artefak gerak,
         // jadi ukur saat subjek diam. Dada tipikal jauh lebih kecil dari jari.
         float pi_ir = ir_dc > 0 ? 100.0f * (ir_max - ir_min) / ir_dc : 0;
-        const char *contact = ir_dc < SKIN_CONTACT_IR_MIN ? "TIDAK ADA KONTAK KULIT" : "kontak kulit OK";
+        const char *contact = ir_dc < SKIN_CONTACT_IR_MIN ? "pantulan IR rendah (cek posisi jari)" : "pantulan IR cukup (indikasi kontak)";
         const char *sat = (red_max >= SATURATION_LEVEL || ir_max >= SATURATION_LEVEL)
                               ? " | SATURASI: turunkan PPG_LED_*_CURRENT atau naikkan PPG_ADC_RANGE_NA"
                               : "";
         Serial.printf("[ppg] %lu sample | red dc=%.0f ac=%lu | ir dc=%.0f ac=%lu | PI_ir=%.2f%% | %s%s\n",
                       (unsigned long)n, red_dc, (unsigned long)(red_max - red_min), ir_dc,
                       (unsigned long)(ir_max - ir_min), pi_ir, contact, sat);
+      } else {
+        Serial.println("[ppg] FAIL: sensor merespons tetapi tidak ada data FIFO selama 5 detik. Tekan 'r' untuk cek ulang.");
       }
     }
     window_start = millis();
